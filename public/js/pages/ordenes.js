@@ -101,7 +101,14 @@ async function renderOrdenDetalle(id) {
             '<button class="btn btn-danger" onclick="cancelarOrdenActual()">✕ Cancelar planilla</button>' +
           '</div>' +
         '</div>'
-      : '') +
+      : orden.estado === 'confirmada'
+        ? '<div class="card">' +
+            '<div class="card-title">Acciones</div>' +
+            '<p class="text-muted text-small" style="margin-bottom:8px">Planilla confirmada: sus líneas ya no se pueden modificar. ' +
+            'Si se cancela, se devuelve al stock lo consumido y queda registrado en Movimientos.</p>' +
+            '<button class="btn btn-danger" style="width:100%" onclick="cancelarOrdenActual()">✕ Cancelar planilla y devolver stock</button>' +
+          '</div>'
+        : '') +
     '<div class="card">' +
       '<div class="card-title">Imprimir / Exportar</div>' +
       '<div style="display:flex;flex-direction:column;gap:8px">' +
@@ -342,10 +349,14 @@ async function confirmarOrdenActual() {
 
 async function cancelarOrdenActual() {
   if (!_ordenActual) return;
-  if (!confirmAction('¿Cancelar esta planilla?')) return;
+  const confirmada = _ordenActual.estado === 'confirmada';
+  const msg = confirmada
+    ? '¿Cancelar esta planilla confirmada?\n\nSe devolverá al stock todo lo que consumió.\nLa devolución quedará registrada en Movimientos.'
+    : '¿Cancelar esta planilla?';
+  if (!confirmAction(msg)) return;
   try {
-    await API.ordenes.cancelar(_ordenActual.id);
-    toast('Planilla cancelada', 'success');
+    const r = await API.ordenes.cancelar(_ordenActual.id);
+    toast(r.revertido ? 'Planilla cancelada — stock devuelto' : 'Planilla cancelada', 'success');
     renderOrdenes();
   } catch (e) { toast(e.message, 'error'); }
 }

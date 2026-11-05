@@ -99,7 +99,13 @@ const MOVIMIENTO_LABELS = {
   consumo_orden:  'Consumo de planilla',
   ingreso_pedido: 'Ingreso de pedido',
 };
-const REFERENCIA_LABELS = { orden: 'Planilla', pedido: 'Pedido' };
+const REFERENCIA_LABELS = {
+  orden: 'Planilla',
+  pedido: 'Pedido',
+  anulacion_orden: 'Anulación de planilla',
+  alta_insumo: 'Alta de insumo',
+  conciliacion: 'Conciliación',
+};
 
 function tipoBadge(tipo) {
   const map = {
