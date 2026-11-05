@@ -103,9 +103,9 @@ async function renderPedidoDetalle(id) {
   const waMsgEsc = escHtml(waMsg);
 
   document.getElementById('pageBody').innerHTML =
-    '<div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">' +
+    '<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">' +
       '<button class="btn btn-sm btn-ghost" onclick="renderPedidos()">← Volver</button>' +
-      '<h2 style="font-family:var(--font-head);font-size:20px;font-weight:800">' +
+      '<h2 class="detail-title">' +
         'Pedido #' + pedido.id + ' — ' + escHtml(pedido.proveedor_nombre) +
       '</h2>' +
       estadoBadge(pedido.estado) +

@@ -3,121 +3,78 @@
 // Usa únicamente los datos existentes de /api/dashboard.
 // ============================================================
 
+let _fabAlertas = { faltantes: [], stock_bajo: [] };
+
 async function renderDashboard() {
   setPageTitle('Fábrica');
-  setTopbarActions(`<button class="btn" onclick="renderDashboard()">↻ Actualizar</button>`);
+  setTopbarActions(`<button class="btn btn-sm" onclick="renderDashboard()">↻ Actualizar</button>`);
   loading();
 
   const data = await API.dashboard();
-
   const { totales, stock_bajo, faltantes, ordenes_recientes, pedidos_pendientes } = data;
+  _fabAlertas = { faltantes, stock_bajo };
 
-  const alertRow = (a, tipo) => `
-    <div class="alert-row">
-      <div style="flex:1;min-width:0">
-        <strong>${escHtml(a.nombre)}</strong>
-        ${a.talle ? `<span class="text-muted"> · Talle ${escHtml(a.talle)}</span>` : ''}
-        ${tipo === 'falta' ? `<div class="text-muted text-small">Proveedor: ${escHtml(a.proveedor_nombre || '—')}</div>` : ''}
-      </div>
-      <span class="bold ${tipo === 'falta' ? 'text-red' : 'text-gold'}" style="font-variant-numeric:tabular-nums">
-        ${tipo === 'falta' ? a.stock : `${a.stock} / ${a.stock_minimo}`}
-      </span>
-      ${stockBadge(a.stock, a.stock_minimo)}
+  const kpi = (label, value, cls = '', hint = '') => `
+    <div class="kpi">
+      <div class="kpi-label">${label}</div>
+      <div class="kpi-value ${cls}">${value}</div>
+      ${hint ? `<div class="kpi-hint">${hint}</div>` : ''}
     </div>`;
 
   const html = `
-    <div class="page-header">
-      <div class="page-header-avatar page-header-avatar--factory" aria-hidden="true">▦</div>
-      <div>
-        <h2>Fábrica</h2>
-        <p>Vista general de insumos, planillas de corte y pedidos.</p>
-      </div>
+    <div class="kpi-strip">
+      ${kpi('Faltantes', faltantes.length, faltantes.length ? 'text-red' : '', 'stock negativo')}
+      ${kpi('Stock bajo', stock_bajo.length, stock_bajo.length ? 'text-gold' : '', 'en o bajo el mínimo')}
+      ${kpi('Planillas en borrador', totales.ordenes_borrador)}
+      ${kpi('Pedidos pendientes', pedidos_pendientes.length)}
+      ${kpi('Insumos', totales.insumos)}
+      ${kpi('Productos', totales.productos)}
+      ${kpi('Proveedores', totales.proveedores)}
     </div>
 
-    <div class="stats-grid">
-      <div class="stat-card stat-card--accent">
-        <div class="stat-num">${totales.insumos}</div>
-        <div class="stat-label">Insumos</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-num">${totales.productos}</div>
-        <div class="stat-label">Productos</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-num">${totales.proveedores}</div>
-        <div class="stat-label">Proveedores</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-num">${totales.ordenes_borrador}</div>
-        <div class="stat-label">Planillas en borrador</div>
-      </div>
-      <div class="stat-card stat-card--gold">
-        <div class="stat-num text-gold">${stock_bajo.length}</div>
-        <div class="stat-label">Alertas de stock bajo</div>
-      </div>
-      <div class="stat-card stat-card--red">
-        <div class="stat-num text-red">${faltantes.length}</div>
-        <div class="stat-label">Faltantes (stock negativo)</div>
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="section-header">
-        <div class="card-title">Responsables de reposición</div>
-        <span class="badge badge-gray">${totales.insumos} insumos sin responsable</span>
-      </div>
-      <p class="card-subtitle" style="margin-top:0">
-        La asignación de insumos a cada responsable todavía no está habilitada.
-      </p>
-      <div class="resp-grid">
-        ${ESPACIOS.map(e => `
-          <a class="resp-card" href="#espacio/${e.slug}">
-            <div class="resp-card-head">
-              <span class="nav-avatar" style="--avatar:${e.color};width:36px;height:36px;font-size:15px" aria-hidden="true">${e.inicial}</span>
-              <div>
-                <div class="resp-card-name">${escHtml(e.nombre)}</div>
-                <div class="resp-card-meta">Sin insumos asignados todavía</div>
-              </div>
-            </div>
-            <span class="resp-card-link">Ver espacio →</span>
-          </a>`).join('')}
-      </div>
-    </div>
-
-    <div class="two-col">
-      <div class="card">
-        <div class="section-header">
-          <div class="card-title">Faltantes</div>
-          <span class="badge badge-red">${faltantes.length}</span>
+    <div class="grid-main">
+      <div class="card card--flush">
+        <div class="card-head">
+          <div class="card-title">Alertas de inventario</div>
+          <div class="segmented" role="tablist" aria-label="Tipo de alerta">
+            <button role="tab" id="tabFalt" class="active" aria-selected="true" onclick="fabMostrarAlertas('faltantes')">
+              Faltantes <span class="tab-count">${faltantes.length}</span></button>
+            <button role="tab" id="tabBajo" aria-selected="false" onclick="fabMostrarAlertas('stock_bajo')">
+              Stock bajo <span class="tab-count">${stock_bajo.length}</span></button>
+          </div>
         </div>
-        ${faltantes.length === 0
-          ? emptyState('Sin faltantes')
-          : `<div class="alert-list">${faltantes.map(a => alertRow(a, 'falta')).join('')}</div>`}
+        <div id="fabAlertas"></div>
       </div>
 
-      <div class="card">
-        <div class="section-header">
-          <div class="card-title">Stock bajo</div>
-          <span class="badge badge-gold">${stock_bajo.length}</span>
+      <div class="card card--flush">
+        <div class="card-head">
+          <div class="card-title">Responsables de reposición</div>
+          <span class="badge badge-gray" title="La asignación todavía no está habilitada">${totales.insumos} sin asignar</span>
         </div>
-        ${stock_bajo.length === 0
-          ? emptyState('Todo en orden')
-          : `<div class="alert-list">${stock_bajo.map(a => alertRow(a, 'bajo')).join('')}</div>`}
+        <div class="resp-list">
+          ${ESPACIOS.map(e => `
+            <a class="resp-row" href="#espacio/${e.slug}">
+              <span class="nav-avatar" style="--avatar:${e.color}" aria-hidden="true">${e.inicial}</span>
+              <span>
+                <span class="resp-name">${escHtml(e.nombre)}</span>
+                <span class="resp-meta"> · sin insumos asignados</span>
+              </span>
+              <span class="resp-go" aria-hidden="true">→</span>
+            </a>`).join('')}
+        </div>
       </div>
     </div>
 
-    <div class="card">
+    <div class="card" style="margin-top:var(--gap)">
       <div class="card-title">Movimiento rápido de stock</div>
-      <div class="quick-stock-panel" id="quickStockPanel">
-        Cargando insumos...
-      </div>
+      <div class="quick-stock-panel" id="quickStockPanel"><span class="text-muted">Cargando insumos…</span></div>
     </div>
 
     <div class="two-col">
-      <div class="card">
-        <div class="section-header">
+      <div class="card card--flush">
+        <div class="card-head">
           <div class="card-title">Planillas de corte recientes</div>
-          <button class="btn btn-sm" onclick="router.go('planillas')">Ver todas</button>
+          <button class="btn btn-sm btn-ghost" onclick="router.go('planillas')">Ver todas →</button>
         </div>
         ${ordenes_recientes.length === 0
           ? emptyState('Sin planillas de corte')
@@ -130,18 +87,16 @@ async function renderDashboard() {
                   <td>${escHtml(o.descripcion || '—')}</td>
                   <td>${estadoBadge(o.estado)}</td>
                   <td class="num">${o.total_pares || 0}</td>
-                  <td class="text-muted">${formatDate(o.created_at)}</td>
-                </tr>
-              `).join('')}
+                  <td class="text-muted nowrap">${formatDate(o.created_at)}</td>
+                </tr>`).join('')}
             </tbody>
-          </table></div>`
-        }
+          </table></div>`}
       </div>
 
-      <div class="card">
-        <div class="section-header">
+      <div class="card card--flush">
+        <div class="card-head">
           <div class="card-title">Pedidos pendientes</div>
-          <button class="btn btn-sm" onclick="router.go('pedidos')">Ver todos</button>
+          <button class="btn btn-sm btn-ghost" onclick="router.go('pedidos')">Ver todos →</button>
         </div>
         ${pedidos_pendientes.length === 0
           ? emptyState('Sin pedidos pendientes')
@@ -153,18 +108,45 @@ async function renderDashboard() {
                   <td class="text-muted">#${p.id}</td>
                   <td>${escHtml(p.proveedor_nombre)}</td>
                   <td>${estadoBadge(p.estado)}</td>
-                  <td class="text-muted">${formatDate(p.created_at)}</td>
-                </tr>
-              `).join('')}
+                  <td class="text-muted nowrap">${formatDate(p.created_at)}</td>
+                </tr>`).join('')}
             </tbody>
-          </table></div>`
-        }
+          </table></div>`}
       </div>
     </div>
   `;
 
   document.getElementById('pageBody').innerHTML = html;
+  fabMostrarAlertas(faltantes.length || !stock_bajo.length ? 'faltantes' : 'stock_bajo');
   await renderQuickStock();
+}
+
+function fabMostrarAlertas(tipo) {
+  const lista = _fabAlertas[tipo] || [];
+  const esFalta = tipo === 'faltantes';
+  const tf = document.getElementById('tabFalt'), tb = document.getElementById('tabBajo');
+  if (tf && tb) {
+    tf.classList.toggle('active', esFalta); tf.setAttribute('aria-selected', String(esFalta));
+    tb.classList.toggle('active', !esFalta); tb.setAttribute('aria-selected', String(!esFalta));
+  }
+  const cont = document.getElementById('fabAlertas');
+  if (!cont) return;
+  if (!lista.length) {
+    cont.innerHTML = emptyState(esFalta ? 'Sin faltantes: ningún insumo tiene stock negativo.' : 'Ningún insumo está en o bajo su mínimo.');
+    return;
+  }
+  cont.innerHTML = `<div class="table-wrap table-scroll"><table>
+    <thead><tr><th>Insumo</th><th>Talle</th><th class="num">Stock</th><th class="num">Mínimo</th><th>Estado</th><th class="hide-sm">Proveedor</th></tr></thead>
+    <tbody>${lista.map(a => `
+      <tr>
+        <td>${escHtml(a.nombre)}</td>
+        <td class="text-muted">${a.talle ? escHtml(a.talle) : '—'}</td>
+        <td class="num ${a.stock < 0 ? 'text-red' : ''}">${a.stock}</td>
+        <td class="num text-muted">${a.stock_minimo}</td>
+        <td>${stockBadge(a.stock, a.stock_minimo)}</td>
+        <td class="text-muted hide-sm">${escHtml(a.proveedor_nombre || '—')}</td>
+      </tr>`).join('')}
+    </tbody></table></div>`;
 }
 
 async function renderQuickStock() {
@@ -174,33 +156,33 @@ async function renderQuickStock() {
 
   panel.innerHTML = `
     <div class="quick-stock-controls">
-      <div class="form-group" style="flex:2 1 220px">
+      <div class="form-group" style="flex:3 1 220px">
         <label class="form-label" for="qsInsumo">Insumo</label>
         <select class="form-select" id="qsInsumo" onchange="onQsInsumoChange()">
           <option value="">— Seleccionar —</option>
           ${insumos.map(i => `<option value="${i.id}" data-tipo="${i.tipo}">${escHtml(i.nombre)}</option>`).join('')}
         </select>
       </div>
-      <div id="qsTalleWrap" style="display:none">
+      <div id="qsTalleWrap" style="display:none;flex:0 1 90px">
         <label class="form-label" for="qsTalle">Talle</label>
         <select class="form-select" id="qsTalle">
           ${TALLES_CALZADO.map(t => `<option value="${t}">${t}</option>`).join('')}
         </select>
       </div>
-      <div>
+      <div style="flex:0 1 110px">
         <label class="form-label" for="qsCantidad">Cantidad</label>
         <input class="form-input" type="number" id="qsCantidad" value="1" min="1" />
       </div>
-      <div>
-        <label class="form-label" for="qsTipo">Tipo de movimiento</label>
+      <div style="flex:1 1 140px">
+        <label class="form-label" for="qsTipo">Tipo</label>
         <select class="form-select" id="qsTipo">
           <option value="ingreso">Ingreso</option>
           <option value="egreso">Egreso</option>
-          <option value="ajuste">Ajuste</option>
+          <option value="ajuste">Ajuste (fijar valor)</option>
         </select>
       </div>
       <div style="flex:0 0 auto">
-        <button class="btn btn-primary" style="min-height:44px" onclick="doQuickStock()">Registrar movimiento</button>
+        <button class="btn btn-primary" onclick="doQuickStock()">Registrar</button>
       </div>
     </div>
   `;

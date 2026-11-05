@@ -55,6 +55,8 @@ const router = {
     setBreadcrumb(p.group);
     this.current = page;
     closeSidebar();
+    const scroller = document.getElementById('pageScroll');
+    if (scroller) scroller.scrollTop = 0;
 
     try {
       await p.render(id);

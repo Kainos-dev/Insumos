@@ -3,11 +3,11 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="theme-color" content="#191917" />
+  <meta name="theme-color" content="#141518" />
   <title>Darc Cuir & Yatay — Gestión de insumos</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/css/main.css" />
 </head>
 <body>
@@ -16,7 +16,7 @@
       <div class="sidebar-brand">
         <span class="brand-icon" aria-hidden="true">DY</span>
         <div>
-          <div class="brand-name">DARC CUIR<br />&amp; YATAY</div>
+          <div class="brand-name">Darc Cuir &amp; Yatay</div>
           <div class="brand-sub">Gestión de insumos</div>
         </div>
       </div>
@@ -56,23 +56,28 @@
         </div>
       </nav>
       <div class="sidebar-footer">
-        <strong>Acceso abierto</strong> · todavía sin usuarios ni permisos<br />
-        v1.1 · prototipo visual
+        <strong>Acceso abierto</strong> · sin usuarios ni permisos todavía
       </div>
     </aside>
     <div class="sidebar-backdrop" id="sidebarBackdrop" aria-hidden="true"></div>
 
     <main class="main-content">
-      <header class="topbar">
+      <!-- Barra superior: solo en celular y tablet -->
+      <header class="mobilebar">
         <button class="menu-toggle" id="menuToggle" aria-label="Abrir menú" aria-controls="sidebar" aria-expanded="false">☰</button>
-        <div class="topbar-titles">
-          <div class="breadcrumb" id="breadcrumb">Espacios de trabajo</div>
-          <h1 class="page-title" id="pageTitle">Fábrica</h1>
-        </div>
-        <div class="topbar-actions" id="topbarActions"></div>
+        <span class="mobilebar-brand">Darc Cuir &amp; Yatay</span>
       </header>
-      <div class="page-body" id="pageBody">
-        <!-- Pages rendered here -->
+      <div class="page-scroll" id="pageScroll">
+        <div class="page-head">
+          <div class="page-head-titles">
+            <div class="breadcrumb" id="breadcrumb">Espacios de trabajo</div>
+            <h1 class="page-title" id="pageTitle">Fábrica</h1>
+          </div>
+          <div class="topbar-actions" id="topbarActions"></div>
+        </div>
+        <div class="page-body" id="pageBody">
+          <!-- Las páginas se renderizan acá -->
+        </div>
       </div>
     </main>
   </div>

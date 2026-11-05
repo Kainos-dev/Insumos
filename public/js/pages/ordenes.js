@@ -146,9 +146,9 @@ async function renderOrdenDetalle(id) {
 
   document.getElementById('pageBody').innerHTML =
     // Cabecera de la planilla
-    '<div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;flex-wrap:wrap">' +
+    '<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">' +
       '<button class="btn btn-sm btn-ghost" onclick="renderOrdenes()">← Volver</button>' +
-      '<h2 style="font-family:var(--font-head);font-size:22px;font-weight:800">' +
+      '<h2 class="detail-title">' +
         'Planilla de Corte #' + orden.id + ' ' + estadoBadge(orden.estado) +
       '</h2>' +
       '<span class="text-muted">' + escHtml(orden.descripcion || '') + '</span>' +
