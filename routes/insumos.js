@@ -3,7 +3,16 @@
 const express = require('express');
 const router = express.Router();
 const { all, get, run, transaction } = require('../db/database');
-const { getStockRows, setStock, adjustStock } = require('../services/stockService');
+const { getStockRows, setStock, adjustStock, contarFilasDuplicadas } = require('../services/stockService');
+
+/** Agrega talles, filas de stock vigentes, total y duplicados pendientes. */
+function completarInsumo(row) {
+  row.talles = all('SELECT talle FROM insumo_talles WHERE insumo_id=? ORDER BY talle', [row.id]).map(t => t.talle);
+  row.stock_rows = getStockRows(row.id);
+  row.stock_total = row.stock_rows.reduce((s, r) => s + r.stock, 0);
+  row.stock_duplicados = contarFilasDuplicadas(row.id);
+  return row;
+}
 
 router.get('/', (req, res) => {
   const rows = all(`
@@ -12,17 +21,7 @@ router.get('/', (req, res) => {
     LEFT JOIN proveedores p ON p.id = i.proveedor_id
     ORDER BY i.tipo, i.nombre
   `);
-  // Attach aggregated stock
-  for (const row of rows) {
-    row.talles = all(
-      'SELECT talle FROM insumo_talles WHERE insumo_id=? ORDER BY talle',
-      [row.id]
-    ).map(t => t.talle);
-    const stocks = getStockRows(row.id);
-    row.stock_rows = stocks;
-    row.stock_total = stocks.reduce((s, r) => s + r.stock, 0);
-  }
-  res.json(rows);
+  res.json(rows.map(completarInsumo));
 });
 
 router.get('/:id', (req, res) => {
@@ -32,14 +31,8 @@ router.get('/:id', (req, res) => {
     LEFT JOIN proveedores p ON p.id = i.proveedor_id
     WHERE i.id=?
   `, [req.params.id]);
-  row.talles = all(
-    'SELECT talle FROM insumo_talles WHERE insumo_id=? ORDER BY talle',
-    [row.id]
-  ).map(t => t.talle);
-  if (!row) return res.status(404).json({ error: 'No encontrado' });
-  row.stock_rows = getStockRows(row.id);
-  row.stock_total = row.stock_rows.reduce((s, r) => s + r.stock, 0);
-  res.json(row);
+  if (!row) return res.status(404).json({ error: 'Insumo no encontrado' });
+  res.json(completarInsumo(row));
 });
 
 router.post('/', (req, res) => {

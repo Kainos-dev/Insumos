@@ -60,7 +60,8 @@ function renderInsumosTable(insumos) {
       ${insumos.map(i => {
         const sc = stockColor(i.stock_total, i.stock_minimo);
         return `<tr>
-          <td><strong>${escHtml(i.nombre)}</strong></td>
+          <td><strong>${escHtml(i.nombre)}</strong>
+            ${i.stock_duplicados ? `<span class="badge badge-gold" title="Hay ${i.stock_duplicados} registros de stock duplicados de un error anterior. Se muestra el valor que usa el sistema; requiere conteo físico.">Conciliación pendiente</span>` : ''}</td>
           <td>${i.color ? `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${colorToCSS(i.color)};margin-right:6px;vertical-align:middle"></span>${escHtml(i.color)}` : '<span class="text-muted">—</span>'}</td>
           <td>${escHtml(i.proveedor_nombre || '—')}</td>
           <td class="num">${i.stock_minimo}</td>

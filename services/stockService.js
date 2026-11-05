@@ -1,41 +1,95 @@
 'use strict';
 
 const { get, all, run, transaction, getDb } = require('../db/database');
+const { AppError } = require('../utils/errores');
+
+// ------------------------------------------------------------------
+// STOCK SIN TALLE (cierres, hebillas)
+//
+// SQLite trata cada NULL como distinto dentro de UNIQUE(insumo_id, talle),
+// por lo que el antiguo "INSERT ... ON CONFLICT" nunca detectaba la fila
+// existente con talle NULL e insertaba una nueva en cada movimiento.
+//
+// Ahora toda lectura y escritura usa UNA fila determinista: la de menor id
+// (la misma que el sistema ya leía). Las filas duplicadas históricas no se
+// modifican ni se borran: quedan para conciliación manual
+// (ver scripts/conciliacion-stock.js).
+// ------------------------------------------------------------------
+
+/** '' / undefined → null; números → texto ('38'). */
+function normalizarTalle(talle) {
+  if (talle === undefined || talle === null) return null;
+  const t = String(talle).trim();
+  return t === '' ? null : t;
+}
+
+/** Fila de stock vigente para insumo+talle (o undefined si no existe). */
+function getStockRow(insumo_id, talle = null) {
+  const t = normalizarTalle(talle);
+  return t === null
+    ? get('SELECT * FROM insumo_stock WHERE insumo_id = ? AND talle IS NULL ORDER BY id LIMIT 1', [insumo_id])
+    : get('SELECT * FROM insumo_stock WHERE insumo_id = ? AND talle = ? ORDER BY id LIMIT 1', [insumo_id, t]);
+}
 
 /**
- * Get stock for a given insumo+talle.
- * talle = null for cierres/hebillas.
+ * Stock de un insumo+talle. talle = null para cierres/hebillas.
  */
 function getStock(insumo_id, talle = null) {
-  const row = get(
-    'SELECT stock FROM insumo_stock WHERE insumo_id = ? AND (talle = ? OR (talle IS NULL AND ? IS NULL))',
-    [insumo_id, talle, talle]
-  );
+  const row = getStockRow(insumo_id, talle);
   return row ? row.stock : 0;
 }
 
 /**
- * Get all stock rows for an insumo.
+ * Filas de stock vigentes de un insumo (sin las duplicadas históricas).
  */
 function getStockRows(insumo_id) {
-  return all('SELECT * FROM insumo_stock WHERE insumo_id = ? ORDER BY talle', [insumo_id]);
+  return all(`
+    SELECT * FROM insumo_stock s
+    WHERE s.insumo_id = ?
+      AND (s.talle IS NOT NULL
+           OR s.id = (SELECT MIN(x.id) FROM insumo_stock x WHERE x.insumo_id = s.insumo_id AND x.talle IS NULL))
+    ORDER BY s.talle`, [insumo_id]);
+}
+
+/** Cantidad de filas duplicadas históricas (talle NULL) pendientes de conciliar. */
+function contarFilasDuplicadas(insumo_id) {
+  const r = get('SELECT COUNT(*) AS n FROM insumo_stock WHERE insumo_id = ? AND talle IS NULL', [insumo_id]);
+  return Math.max(0, (r ? r.n : 0) - 1);
+}
+
+/** Insumos con filas de stock general duplicadas. */
+function insumosConDuplicados() {
+  return all(`
+    SELECT s.insumo_id, i.nombre, COUNT(*) - 1 AS filas_duplicadas
+    FROM insumo_stock s JOIN insumos i ON i.id = s.insumo_id
+    WHERE s.talle IS NULL
+    GROUP BY s.insumo_id HAVING COUNT(*) > 1
+    ORDER BY i.nombre`);
 }
 
 /**
- * Upsert stock for insumo+talle.
+ * Fija el stock de insumo+talle actualizando la fila vigente (o creándola si
+ * no existe). Nunca crea una segunda fila. No registra movimiento: usar
+ * adjustStock para cambios de inventario.
  */
 function setStock(insumo_id, talle, stock) {
-  run(
-    `INSERT INTO insumo_stock (insumo_id, talle, stock) VALUES (?, ?, ?)
-     ON CONFLICT(insumo_id, talle) DO UPDATE SET stock = excluded.stock`,
-    [insumo_id, talle, stock]
-  );
+  if (!Number.isInteger(stock)) throw new AppError('El stock debe ser un número entero');
+  const t = normalizarTalle(talle);
+  const row = getStockRow(insumo_id, t);
+  if (row) {
+    run('UPDATE insumo_stock SET stock = ? WHERE id = ?', [stock, row.id]);
+  } else {
+    run('INSERT INTO insumo_stock (insumo_id, talle, stock) VALUES (?, ?, ?)', [insumo_id, t, stock]);
+  }
 }
 
 /**
- * Adjust stock by delta (positive = add, negative = subtract). Allows negatives.
+ * Ajusta el stock y registra el movimiento. Permite stock negativo.
+ * tipo 'ajuste': delta es el valor final; el movimiento guarda la diferencia.
  */
 function adjustStock(insumo_id, talle, delta, tipo, referencia_tipo = null, referencia_id = null) {
+  if (!Number.isInteger(delta)) throw new AppError('La cantidad debe ser un número entero');
+  talle = normalizarTalle(talle);
   transaction(() => {
     const current = getStock(insumo_id, talle);
 
@@ -243,8 +297,12 @@ function getAlertasStock() {
 }
 
 module.exports = {
+  normalizarTalle,
+  getStockRow,
   getStock,
   getStockRows,
+  contarFilasDuplicadas,
+  insumosConDuplicados,
   setStock,
   adjustStock,
   verificarStockOrden,
