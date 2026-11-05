@@ -4,6 +4,7 @@ const express = require('express');
 const router = express.Router();
 const { all, get } = require('../db/database');
 const { getAlertasStock, insumosConDuplicados, insumosSinTallesHabilitados } = require('../services/stockService');
+const responsables = require('../services/responsablesService');
 
 router.get('/', (req, res) => {
   const alertas = getAlertasStock();
@@ -48,6 +49,10 @@ router.get('/', (req, res) => {
       conciliacion: insumosConDuplicados(),
       sin_talles: insumosSinTallesHabilitados(),
     },
+    // Responsables de reposición (null si falta la migración en esta base)
+    responsables: responsables.disponible()
+      ? { disponible: true, lista: responsables.listar(), sin_asignar: responsables.insumosSinAsignar() }
+      : { disponible: false, ...responsables.estadoModulo() },
   });
 });
 

@@ -28,7 +28,9 @@ router.post('/', (req, res) => {
   if (!proveedor_id || !lineas || !lineas.length) {
     return res.status(400).json({ error: 'proveedor_id y lineas son requeridos' });
   }
-  const id = svc.crearPedido(Number(proveedor_id), lineas);
+  // responsable_id (opcional): el elegido en pantalla; el servidor lo valida contra los insumos
+  const id = svc.crearPedido(Number(proveedor_id), lineas,
+    Object.prototype.hasOwnProperty.call(req.body, 'responsable_id') ? req.body.responsable_id : undefined);
   res.json({ id });
 });
 

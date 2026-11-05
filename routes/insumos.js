@@ -5,20 +5,20 @@ const router = express.Router();
 const { all, get, run, transaction } = require('../db/database');
 const { AppError } = require('../utils/errores');
 const {
-  getStockRows, setStock, adjustStock, contarFilasDuplicadas,
-  usaTalle, registrarMovimientoManual, normalizarTalle, estadoStock,
+  setStock, adjustStock, usaTalle, registrarMovimientoManual, normalizarTalle, detalleInsumo,
 } = require('../services/stockService');
+const responsables = require('../services/responsablesService');
 
 const TIPOS = ['plantilla', 'fondo', 'cierre', 'hebilla'];
 
-/** Agrega talles, filas de stock vigentes, total y duplicados pendientes. */
-function completarInsumo(row) {
-  row.talles = all('SELECT talle FROM insumo_talles WHERE insumo_id=? ORDER BY talle', [row.id]).map(t => t.talle);
-  row.stock_rows = getStockRows(row.id);
-  row.stock_total = row.stock_rows.reduce((s, r) => s + r.stock, 0);
-  row.stock_duplicados = contarFilasDuplicadas(row.id);
-  row.estado_stock = estadoStock(row, row.stock_rows, row.talles);   // 'faltante' | 'sin_stock' | 'stock_bajo' | 'ok'
-  row.sin_talles_habilitados = usaTalle(row.tipo) && row.talles.length === 0;
+/**
+ * Detalle del insumo + responsable asignado (null si no tiene o si la base
+ * todavía no tiene la migración de responsables).
+ */
+function completarInsumo(row, asignaciones = responsables.mapaAsignaciones()) {
+  detalleInsumo(row);
+  const a = asignaciones.get(row.id);
+  row.responsable = a ? { id: a.responsable_id, slug: a.slug, nombre: a.nombre, asignado_at: a.asignado_at } : null;
   return row;
 }
 
@@ -46,7 +46,8 @@ router.get('/', (req, res) => {
     LEFT JOIN proveedores p ON p.id = i.proveedor_id
     ORDER BY i.tipo, i.nombre
   `);
-  res.json(rows.map(completarInsumo));
+  const asignaciones = responsables.mapaAsignaciones();
+  res.json(rows.map(r => completarInsumo(r, asignaciones)));
 });
 
 router.get('/:id', (req, res) => {
@@ -121,6 +122,12 @@ router.delete('/:id', (req, res) => {
   const r = run('DELETE FROM insumos WHERE id=?', [req.params.id]);
   if (!r.changes) throw new AppError('Insumo no encontrado', 404);
   res.json({ ok: true });
+});
+
+// Asignar, cambiar o quitar (responsable_id: null) el responsable de reposición.
+// No modifica stock, movimientos ni historiales.
+router.put('/:id/responsable', (req, res) => {
+  res.json({ ok: true, ...responsables.asignar(Number(req.params.id), req.body.responsable_id) });
 });
 
 // Movimiento manual de stock (ingreso / egreso / ajuste)

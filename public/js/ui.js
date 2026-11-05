@@ -105,6 +105,24 @@ function estadoStockBadge(estado) {
   return `<span class="stock-state stock-state--${e.clase}">${e.label}</span>`;
 }
 
+// Responsable de reposición (o "Sin asignar")
+function responsableChip(r) {
+  if (!r || !r.slug) return '<span class="text-muted">Sin asignar</span>';
+  const e = getEspacio(r.slug) || {};
+  return `<span class="resp-chip"><span class="nav-avatar" style="--avatar:${e.color || 'var(--text3)'}" aria-hidden="true">${escHtml(e.inicial || r.nombre[0])}</span>${escHtml(r.nombre)}</span>`;
+}
+
+function avisoMigracionPendiente(detalle = '') {
+  return `<div class="notice notice--warn" role="status">
+    <span class="notice-icon" aria-hidden="true">▲</span>
+    <div>
+      <strong>La gestión de responsables todavía no está habilitada en esta base de datos.</strong>
+      <p>Falta aplicar la migración de responsables (requiere aprobación y respaldo previo). ${detalle}
+      El resto del sistema funciona normalmente.</p>
+    </div>
+  </div>`;
+}
+
 // Etiquetas visibles de los movimientos y sus referencias
 const MOVIMIENTO_LABELS = {
   ingreso:        'Ingreso',

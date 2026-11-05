@@ -54,7 +54,7 @@ function renderInsumosTable(insumos) {
   if (!insumos.length) return emptyState('Sin insumos en esta categoría');
   return `<div class="card"><div class="table-wrap"><table>
     <thead><tr>
-      <th>Nombre</th><th>Color</th><th>Proveedor</th><th class="num">Stock mín.</th><th class="num">Stock total</th><th>Estado</th><th>Acciones</th>
+      <th>Nombre</th><th>Color</th><th>Proveedor</th><th>Responsable</th><th class="num">Stock mín.</th><th class="num">Stock total</th><th>Estado</th><th>Acciones</th>
     </tr></thead>
     <tbody>
       ${insumos.map(i => {
@@ -64,6 +64,7 @@ function renderInsumosTable(insumos) {
             ${i.stock_duplicados ? `<span class="badge badge-gold" title="Hay ${i.stock_duplicados} registros de stock duplicados de un error anterior. Se muestra el valor que usa el sistema; requiere conteo físico.">Conciliación pendiente</span>` : ''}</td>
           <td>${i.color ? `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${colorToCSS(i.color)};margin-right:6px;vertical-align:middle"></span>${escHtml(i.color)}` : '<span class="text-muted">—</span>'}</td>
           <td>${escHtml(i.proveedor_nombre || '—')}</td>
+          <td>${responsableChip(i.responsable)}</td>
           <td class="num">${i.stock_minimo}</td>
           <td class="num"><span class="${sc} bold">${i.stock_total}</span></td>
           <td>${estadoStockBadge(i.estado_stock)}

@@ -32,7 +32,11 @@ function rutasProtegidas() {
 
 let _estado = null;
 
-function prepararBaseDePruebas() {
+/**
+ * opciones.migrar (por defecto true): aplica las migraciones versionadas a la
+ * base de prueba. Con false se obtiene una base "como la real antes de E4".
+ */
+function prepararBaseDePruebas({ migrar = true } = {}) {
   if (_estado) return _estado;
   if (require.cache[require.resolve('../db/database')]) {
     throw new Error('prepararBaseDePruebas() debe llamarse antes de cargar db/database.js');
@@ -51,6 +55,7 @@ function prepararBaseDePruebas() {
     throw new Error(`La app no usa la base de prueba (usa ${database.DB_PATH})`);
   }
   if (!database.esBaseDePruebas(database.getDb())) throw new Error('La base abierta no está marcada como de pruebas');
+  if (migrar) require('../db/migraciones').aplicarPendientes(database.getDb());
 
   _estado = {
     dbPath,
@@ -70,8 +75,11 @@ function db() {
   return d;
 }
 
-/** Vacía todas las tablas (solo bases de prueba). */
+/** Vacía todas las tablas de datos (solo bases de prueba). Conserva los responsables. */
 function resetear() {
+  for (const t of ['pedido_responsable', 'insumo_responsable']) {
+    if (db().prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(t)) db().exec(`DELETE FROM ${t}`);
+  }
   db().exec(`
     DELETE FROM movimientos_stock; DELETE FROM detalle_pedido_proveedor; DELETE FROM pedidos_proveedor;
     DELETE FROM detalle_orden; DELETE FROM ordenes_produccion; DELETE FROM producto_accesorios;
@@ -111,6 +119,14 @@ function crearProducto({ nombre = 'Producto', plantilla_id, fondo_id, talles = [
       .run(id, a.insumo_id, a.cantidad_por_par);
   }
   return id;
+}
+
+function responsableId(slug) {
+  return db().prepare('SELECT id FROM responsables WHERE slug = ?').get(slug).id;
+}
+
+function asignarDirecto(insumo_id, slug) {
+  db().prepare('INSERT OR REPLACE INTO insumo_responsable (insumo_id, responsable_id) VALUES (?, ?)').run(insumo_id, responsableId(slug));
 }
 
 function filasStock(insumo_id) {
@@ -158,7 +174,7 @@ async function iniciarServidor() {
 
 module.exports = {
   prepararBaseDePruebas, db, resetear, rutasProtegidas,
-  crearProveedor, crearInsumo, insertarFilaStock, crearProducto,
+  crearProveedor, crearInsumo, insertarFilaStock, crearProducto, responsableId, asignarDirecto,
   filasStock, movimientos, escenarioBase, iniciarServidor,
   TEST_DB_MARKER,
 };

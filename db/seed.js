@@ -61,6 +61,7 @@ function seed(dbPath) {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   initSchema(db);
+  require('./migraciones').aplicarPendientes(db);   // base de pruebas: esquema completo
 
   db.transaction(() => {
     db.exec(`
