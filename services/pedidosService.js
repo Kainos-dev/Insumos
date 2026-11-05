@@ -3,6 +3,7 @@
 const { get, all, run, transaction, getDb } = require('../db/database');
 const { getStock, adjustStock, getAlertasStock } = require('./stockService');
 const { AppError } = require('../utils/errores');
+const responsables = require('./responsablesService');
 
 /**
  * Detect insumos that need ordering:
@@ -50,10 +51,18 @@ function getInsumosConStock() {
 }
 
 /**
- * Create a pedido draft.
+ * Crea un pedido en borrador.
  * lineas = [{insumo_id, talle, cantidad}]
+ *
+ * Responsable (validado en el servidor):
+ * · El responsable del pedido es el de sus insumos; todos deben pertenecer
+ *   al mismo responsable. Se rechazan mezclas (distintos responsables, o
+ *   insumos asignados con insumos sin asignar).
+ * · Si todos los insumos están sin asignar, el pedido queda sin responsable
+ *   (transición mientras se completan las asignaciones).
+ * · responsableEsperado (opcional, el elegido en pantalla) debe coincidir.
  */
-function crearPedido(proveedor_id, lineas) {
+function crearPedido(proveedor_id, lineas, responsableEsperado) {
   if (!get('SELECT id FROM proveedores WHERE id=?', [proveedor_id])) throw new AppError('Proveedor inexistente');
   if (!Array.isArray(lineas) || !lineas.length) throw new AppError('El pedido necesita al menos una línea');
   for (const l of lineas) {
@@ -62,10 +71,18 @@ function crearPedido(proveedor_id, lineas) {
     if (!get('SELECT id FROM insumos WHERE id=?', [l.insumo_id])) throw new AppError('Insumo inexistente en el pedido');
     l.cantidad = c;
   }
+  const responsableId = responsables.responsableDeLineas(lineas);
+  if (responsableEsperado !== undefined) {
+    const esperado = responsableEsperado === null || responsableEsperado === '' ? null : Number(responsableEsperado);
+    if (esperado !== responsableId) {
+      throw new AppError('Los insumos del pedido no corresponden al responsable elegido');
+    }
+  }
   let pedidoId;
   transaction(() => {
     const r = run('INSERT INTO pedidos_proveedor (proveedor_id) VALUES (?)', [proveedor_id]);
     pedidoId = r.lastInsertRowid;
+    responsables.asignarPedido(pedidoId, responsableId);
     for (const l of lineas) {
       run(
         'INSERT INTO detalle_pedido_proveedor (pedido_id, insumo_id, talle, cantidad) VALUES (?,?,?,?)',
@@ -103,22 +120,35 @@ function generarMensajeWA(pedidoId) {
   return msg;
 }
 
+/** Columnas de responsable (null si la base no tiene la migración). */
+function columnasResponsable() {
+  return responsables.disponible()
+    ? { select: ', r.id AS responsable_id, r.slug AS responsable_slug, r.nombre AS responsable_nombre',
+        join: 'LEFT JOIN pedido_responsable x ON x.pedido_id = pp.id LEFT JOIN responsables r ON r.id = x.responsable_id' }
+    : { select: ', NULL AS responsable_id, NULL AS responsable_slug, NULL AS responsable_nombre', join: '' };
+}
+
 function listarPedidos() {
+  const c = columnasResponsable();
   return all(`
     SELECT pp.*, pr.nombre AS proveedor_nombre,
            COUNT(d.id) AS lineas,
            SUM(d.cantidad) AS total_unidades
+           ${c.select}
     FROM pedidos_proveedor pp
     JOIN proveedores pr ON pr.id = pp.proveedor_id
+    ${c.join}
     LEFT JOIN detalle_pedido_proveedor d ON d.pedido_id = pp.id
     GROUP BY pp.id
-    ORDER BY pp.created_at DESC
+    ORDER BY pp.created_at DESC, pp.id DESC
   `);
 }
 
 function getPedido(id) {
+  const c = columnasResponsable();
   const pedido = get(
-    'SELECT pp.*, pr.nombre AS proveedor_nombre FROM pedidos_proveedor pp JOIN proveedores pr ON pr.id=pp.proveedor_id WHERE pp.id=?',
+    `SELECT pp.*, pr.nombre AS proveedor_nombre ${c.select}
+     FROM pedidos_proveedor pp JOIN proveedores pr ON pr.id=pp.proveedor_id ${c.join} WHERE pp.id=?`,
     [id]
   );
   if (!pedido) return null;

@@ -374,6 +374,20 @@ function getAlertasStock() {
     a.stock - b.stock || a.nombre.localeCompare(b.nombre) || String(a.talle).localeCompare(String(b.talle)));
 }
 
+/**
+ * Completa un insumo con talles habilitados, filas de stock vigentes,
+ * total, duplicados pendientes y estado de stock.
+ */
+function detalleInsumo(row) {
+  row.talles = all('SELECT talle FROM insumo_talles WHERE insumo_id=? ORDER BY talle', [row.id]).map(t => t.talle);
+  row.stock_rows = getStockRows(row.id);
+  row.stock_total = row.stock_rows.reduce((s, r) => s + r.stock, 0);
+  row.stock_duplicados = contarFilasDuplicadas(row.id);
+  row.estado_stock = estadoStock(row, row.stock_rows, row.talles);   // 'faltante' | 'sin_stock' | 'stock_bajo' | 'ok'
+  row.sin_talles_habilitados = usaTalle(row.tipo) && row.talles.length === 0;
+  return row;
+}
+
 /** Plantillas y fondos sin talles habilitados: no pueden generar alertas de stock bajo. */
 function insumosSinTallesHabilitados() {
   return all(`
@@ -401,5 +415,6 @@ module.exports = {
   clasificarStock,
   clasificarFila,
   estadoStock,
+  detalleInsumo,
   insumosSinTallesHabilitados,
 };

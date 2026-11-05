@@ -16,6 +16,7 @@ app.use('/api/ordenes',     require('./routes/ordenes'));
 app.use('/api/pedidos',     require('./routes/pedidos'));
 app.use('/api/dashboard',   require('./routes/dashboard'));
 app.use('/api/movimientos', require('./routes/movimientos'));
+app.use('/api/responsables', require('./routes/responsables'));
 
 // Rutas de API inexistentes: JSON en vez de la página principal
 app.use('/api', (req, res) => res.status(404).json({ error: 'Ruta no encontrada' }));
