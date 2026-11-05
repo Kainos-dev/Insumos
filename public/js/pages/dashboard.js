@@ -3,7 +3,12 @@
 // Usa únicamente los datos existentes de /api/dashboard.
 // ============================================================
 
-let _fabAlertas = { faltantes: [], stock_bajo: [] };
+const FAB_ALERTAS = [
+  { clave: 'faltantes',  label: 'Faltantes',  vacio: 'Sin faltantes: ningún insumo tiene stock negativo.' },
+  { clave: 'sin_stock',  label: 'Sin stock',  vacio: 'Ningún talle habilitado ni stock general está en cero.' },
+  { clave: 'stock_bajo', label: 'Stock bajo', vacio: 'Ningún insumo está en o bajo su mínimo.' },
+];
+let _fabAlertas = { faltantes: [], sin_stock: [], stock_bajo: [] };
 
 async function renderDashboard() {
   setPageTitle('Fábrica');
@@ -12,7 +17,20 @@ async function renderDashboard() {
 
   const data = await API.dashboard();
   const { totales, stock_bajo, faltantes, ordenes_recientes, pedidos_pendientes } = data;
-  _fabAlertas = { faltantes, stock_bajo };
+  const sin_stock = data.sin_stock || [];
+  const avisos = data.avisos || { conciliacion: [], sin_talles: [] };
+  _fabAlertas = { faltantes, sin_stock, stock_bajo };
+
+  const listaNombres = (items) => items.map(i => escHtml(i.nombre)).join(', ');
+  const avisosHtml = (avisos.conciliacion.length || avisos.sin_talles.length) ? `
+    <div class="notice notice--warn" role="status">
+      <span class="notice-icon" aria-hidden="true">▲</span>
+      <div>
+        <strong>Revisión pendiente</strong>
+        ${avisos.conciliacion.length ? `<p>${avisos.conciliacion.length} insumo(s) con stock duplicado de un error anterior; requieren conteo físico y conciliación: ${listaNombres(avisos.conciliacion)}.</p>` : ''}
+        ${avisos.sin_talles.length ? `<p>${avisos.sin_talles.length} plantilla(s)/fondo(s) sin talles habilitados: no generan alertas de sin stock ni de stock bajo (los negativos sí se muestran): ${listaNombres(avisos.sin_talles)}.</p>` : ''}
+      </div>
+    </div>` : '';
 
   const kpi = (label, value, cls = '', hint = '') => `
     <div class="kpi">
@@ -24,7 +42,8 @@ async function renderDashboard() {
   const html = `
     <div class="kpi-strip">
       ${kpi('Faltantes', faltantes.length, faltantes.length ? 'text-red' : '', 'stock negativo')}
-      ${kpi('Stock bajo', stock_bajo.length, stock_bajo.length ? 'text-gold' : '', 'en o bajo el mínimo')}
+      ${kpi('Sin stock', sin_stock.length, sin_stock.length ? 'text-orange' : '', 'en cero')}
+      ${kpi('Stock bajo', stock_bajo.length, stock_bajo.length ? 'text-gold' : '', 'hasta el mínimo')}
       ${kpi('Planillas en borrador', totales.ordenes_borrador)}
       ${kpi('Pedidos pendientes', pedidos_pendientes.length)}
       ${kpi('Insumos', totales.insumos)}
@@ -32,15 +51,16 @@ async function renderDashboard() {
       ${kpi('Proveedores', totales.proveedores)}
     </div>
 
+    ${avisosHtml}
+
     <div class="grid-main">
       <div class="card card--flush">
         <div class="card-head">
           <div class="card-title">Alertas de inventario</div>
           <div class="segmented" role="tablist" aria-label="Tipo de alerta">
-            <button role="tab" id="tabFalt" class="active" aria-selected="true" onclick="fabMostrarAlertas('faltantes')">
-              Faltantes <span class="tab-count">${faltantes.length}</span></button>
-            <button role="tab" id="tabBajo" aria-selected="false" onclick="fabMostrarAlertas('stock_bajo')">
-              Stock bajo <span class="tab-count">${stock_bajo.length}</span></button>
+            ${FAB_ALERTAS.map(a => `
+              <button role="tab" id="tab_${a.clave}" aria-selected="false" onclick="fabMostrarAlertas('${a.clave}')">
+                ${a.label} <span class="tab-count">${_fabAlertas[a.clave].length}</span></button>`).join('')}
           </div>
         </div>
         <div id="fabAlertas"></div>
@@ -117,30 +137,32 @@ async function renderDashboard() {
   `;
 
   document.getElementById('pageBody').innerHTML = html;
-  fabMostrarAlertas(faltantes.length || !stock_bajo.length ? 'faltantes' : 'stock_bajo');
+  // Se abre la primera categoría con alertas (por gravedad)
+  const inicial = FAB_ALERTAS.find(a => _fabAlertas[a.clave].length) || FAB_ALERTAS[0];
+  fabMostrarAlertas(inicial.clave);
   await renderQuickStock();
 }
 
 function fabMostrarAlertas(tipo) {
   const lista = _fabAlertas[tipo] || [];
-  const esFalta = tipo === 'faltantes';
-  const tf = document.getElementById('tabFalt'), tb = document.getElementById('tabBajo');
-  if (tf && tb) {
-    tf.classList.toggle('active', esFalta); tf.setAttribute('aria-selected', String(esFalta));
-    tb.classList.toggle('active', !esFalta); tb.setAttribute('aria-selected', String(!esFalta));
+  for (const a of FAB_ALERTAS) {
+    const b = document.getElementById('tab_' + a.clave);
+    if (b) { b.classList.toggle('active', a.clave === tipo); b.setAttribute('aria-selected', String(a.clave === tipo)); }
   }
   const cont = document.getElementById('fabAlertas');
   if (!cont) return;
   if (!lista.length) {
-    cont.innerHTML = emptyState(esFalta ? 'Sin faltantes: ningún insumo tiene stock negativo.' : 'Ningún insumo está en o bajo su mínimo.');
+    cont.innerHTML = emptyState((FAB_ALERTAS.find(a => a.clave === tipo) || FAB_ALERTAS[0]).vacio);
     return;
   }
   cont.innerHTML = `<div class="table-wrap table-scroll"><table>
     <thead><tr><th>Insumo</th><th>Talle</th><th class="num">Stock</th><th class="num">Mínimo</th><th>Estado</th><th class="hide-sm">Proveedor</th></tr></thead>
     <tbody>${lista.map(a => `
       <tr>
-        <td>${escHtml(a.nombre)}</td>
-        <td class="text-muted">${a.talle ? escHtml(a.talle) : '—'}</td>
+        <td>${escHtml(a.nombre)}
+          ${a.conciliacion_pendiente ? '<span class="badge badge-gold" title="Stock duplicado pendiente de conciliación">Conciliar</span>' : ''}</td>
+        <td class="text-muted nowrap">${a.talle ? escHtml(a.talle) : '—'}
+          ${a.talle && !a.talle_habilitado ? '<span class="badge badge-gray" title="Este talle no está habilitado para el insumo">no habilitado</span>' : ''}</td>
         <td class="num ${a.stock < 0 ? 'text-red' : ''}">${a.stock}</td>
         <td class="num text-muted">${a.stock_minimo}</td>
         <td>${stockBadge(a.stock, a.stock_minimo)}</td>
@@ -171,7 +193,7 @@ async function renderQuickStock() {
       </div>
       <div style="flex:0 1 110px">
         <label class="form-label" for="qsCantidad">Cantidad</label>
-        <input class="form-input" type="number" id="qsCantidad" value="1" min="1" />
+        <input class="form-input" type="number" id="qsCantidad" value="1" min="0" step="1" />
       </div>
       <div style="flex:1 1 140px">
         <label class="form-label" for="qsTipo">Tipo</label>
@@ -204,7 +226,7 @@ async function doQuickStock() {
   const talleWrap = document.getElementById('qsTalleWrap');
   const talle = talleWrap.style.display !== 'none' ? talleEl.value : null;
 
-  if (!insumo_id || !cantidad) { toast('Completar todos los campos', 'error'); return; }
+  if (!insumo_id || Number.isNaN(cantidad)) { toast('Completar todos los campos', 'error'); return; }
 
   try {
     await API.movimientos.rapido({ insumo_id: Number(insumo_id), talle, cantidad, tipo });

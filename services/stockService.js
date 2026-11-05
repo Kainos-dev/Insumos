@@ -1,41 +1,95 @@
 'use strict';
 
 const { get, all, run, transaction, getDb } = require('../db/database');
+const { AppError } = require('../utils/errores');
+
+// ------------------------------------------------------------------
+// STOCK SIN TALLE (cierres, hebillas)
+//
+// SQLite trata cada NULL como distinto dentro de UNIQUE(insumo_id, talle),
+// por lo que el antiguo "INSERT ... ON CONFLICT" nunca detectaba la fila
+// existente con talle NULL e insertaba una nueva en cada movimiento.
+//
+// Ahora toda lectura y escritura usa UNA fila determinista: la de menor id
+// (la misma que el sistema ya leía). Las filas duplicadas históricas no se
+// modifican ni se borran: quedan para conciliación manual
+// (ver scripts/conciliacion-stock.js).
+// ------------------------------------------------------------------
+
+/** '' / undefined → null; números → texto ('38'). */
+function normalizarTalle(talle) {
+  if (talle === undefined || talle === null) return null;
+  const t = String(talle).trim();
+  return t === '' ? null : t;
+}
+
+/** Fila de stock vigente para insumo+talle (o undefined si no existe). */
+function getStockRow(insumo_id, talle = null) {
+  const t = normalizarTalle(talle);
+  return t === null
+    ? get('SELECT * FROM insumo_stock WHERE insumo_id = ? AND talle IS NULL ORDER BY id LIMIT 1', [insumo_id])
+    : get('SELECT * FROM insumo_stock WHERE insumo_id = ? AND talle = ? ORDER BY id LIMIT 1', [insumo_id, t]);
+}
 
 /**
- * Get stock for a given insumo+talle.
- * talle = null for cierres/hebillas.
+ * Stock de un insumo+talle. talle = null para cierres/hebillas.
  */
 function getStock(insumo_id, talle = null) {
-  const row = get(
-    'SELECT stock FROM insumo_stock WHERE insumo_id = ? AND (talle = ? OR (talle IS NULL AND ? IS NULL))',
-    [insumo_id, talle, talle]
-  );
+  const row = getStockRow(insumo_id, talle);
   return row ? row.stock : 0;
 }
 
 /**
- * Get all stock rows for an insumo.
+ * Filas de stock vigentes de un insumo (sin las duplicadas históricas).
  */
 function getStockRows(insumo_id) {
-  return all('SELECT * FROM insumo_stock WHERE insumo_id = ? ORDER BY talle', [insumo_id]);
+  return all(`
+    SELECT * FROM insumo_stock s
+    WHERE s.insumo_id = ?
+      AND (s.talle IS NOT NULL
+           OR s.id = (SELECT MIN(x.id) FROM insumo_stock x WHERE x.insumo_id = s.insumo_id AND x.talle IS NULL))
+    ORDER BY s.talle`, [insumo_id]);
+}
+
+/** Cantidad de filas duplicadas históricas (talle NULL) pendientes de conciliar. */
+function contarFilasDuplicadas(insumo_id) {
+  const r = get('SELECT COUNT(*) AS n FROM insumo_stock WHERE insumo_id = ? AND talle IS NULL', [insumo_id]);
+  return Math.max(0, (r ? r.n : 0) - 1);
+}
+
+/** Insumos con filas de stock general duplicadas. */
+function insumosConDuplicados() {
+  return all(`
+    SELECT s.insumo_id, i.nombre, COUNT(*) - 1 AS filas_duplicadas
+    FROM insumo_stock s JOIN insumos i ON i.id = s.insumo_id
+    WHERE s.talle IS NULL
+    GROUP BY s.insumo_id HAVING COUNT(*) > 1
+    ORDER BY i.nombre`);
 }
 
 /**
- * Upsert stock for insumo+talle.
+ * Fija el stock de insumo+talle actualizando la fila vigente (o creándola si
+ * no existe). Nunca crea una segunda fila. No registra movimiento: usar
+ * adjustStock para cambios de inventario.
  */
 function setStock(insumo_id, talle, stock) {
-  run(
-    `INSERT INTO insumo_stock (insumo_id, talle, stock) VALUES (?, ?, ?)
-     ON CONFLICT(insumo_id, talle) DO UPDATE SET stock = excluded.stock`,
-    [insumo_id, talle, stock]
-  );
+  if (!Number.isInteger(stock)) throw new AppError('El stock debe ser un número entero');
+  const t = normalizarTalle(talle);
+  const row = getStockRow(insumo_id, t);
+  if (row) {
+    run('UPDATE insumo_stock SET stock = ? WHERE id = ?', [stock, row.id]);
+  } else {
+    run('INSERT INTO insumo_stock (insumo_id, talle, stock) VALUES (?, ?, ?)', [insumo_id, t, stock]);
+  }
 }
 
 /**
- * Adjust stock by delta (positive = add, negative = subtract). Allows negatives.
+ * Ajusta el stock y registra el movimiento. Permite stock negativo.
+ * tipo 'ajuste': delta es el valor final; el movimiento guarda la diferencia.
  */
 function adjustStock(insumo_id, talle, delta, tipo, referencia_tipo = null, referencia_id = null) {
+  if (!Number.isInteger(delta)) throw new AppError('La cantidad debe ser un número entero');
+  talle = normalizarTalle(talle);
   transaction(() => {
     const current = getStock(insumo_id, talle);
 
@@ -62,6 +116,40 @@ function adjustStock(insumo_id, talle, delta, tipo, referencia_tipo = null, refe
       [insumo_id, talle, tipo, movimientoCantidad, referencia_tipo, referencia_id]
     );
   });
+}
+
+const TIPOS_CON_TALLE = ['plantilla', 'fondo'];
+const TIPOS_MOVIMIENTO_MANUAL = ['ingreso', 'egreso', 'ajuste'];
+
+function usaTalle(tipoInsumo) {
+  return TIPOS_CON_TALLE.includes(tipoInsumo);
+}
+
+/**
+ * Único punto de entrada para movimientos manuales de inventario
+ * (ingreso, egreso o ajuste a un valor). Valida y siempre registra el movimiento.
+ * - ingreso / egreso: cantidad entera > 0.
+ * - ajuste: cantidad = valor final, entero >= 0 (permite fijar en 0).
+ * - Plantillas y fondos requieren talle; cierres y hebillas no llevan talle.
+ */
+function registrarMovimientoManual({ insumo_id, talle, cantidad, tipo, referencia_tipo = null, referencia_id = null }) {
+  if (!TIPOS_MOVIMIENTO_MANUAL.includes(tipo)) {
+    throw new AppError('Tipo de movimiento inválido (ingreso, egreso o ajuste)');
+  }
+  const n = typeof cantidad === 'string' && cantidad.trim() !== '' ? Number(cantidad) : cantidad;
+  if (!Number.isInteger(n)) throw new AppError('La cantidad debe ser un número entero');
+  if (tipo === 'ajuste' ? n < 0 : n <= 0) {
+    throw new AppError(tipo === 'ajuste' ? 'El valor del ajuste no puede ser negativo' : 'La cantidad debe ser mayor que cero');
+  }
+  const insumo = get('SELECT id, tipo FROM insumos WHERE id = ?', [insumo_id]);
+  if (!insumo) throw new AppError('Insumo no encontrado', 404);
+  const t = normalizarTalle(talle);
+  if (usaTalle(insumo.tipo) && t === null) throw new AppError('Este insumo lleva stock por talle: indicá el talle');
+  if (!usaTalle(insumo.tipo) && t !== null) throw new AppError('Este insumo no lleva talle');
+
+  const delta = tipo === 'egreso' ? -n : n;
+  adjustStock(insumo.id, t, delta, tipo, referencia_tipo, referencia_id);
+  return { insumo_id: insumo.id, talle: t, stock: getStock(insumo.id, t) };
 }
 
 /**
@@ -203,51 +291,115 @@ function consumirStockOrden(orden_id, detalles) {
   });
 }
 
+// ------------------------------------------------------------------
+// CLASIFICACIÓN DE STOCK — regla única para toda la aplicación
+//   · faltante:   stock < 0
+//   · sin_stock:  stock = 0
+//   · stock_bajo: 0 < stock <= mínimo, solo cuando el mínimo es > 0
+//   · ok:         el resto
+//
+// ALERTAS DE INVENTARIO
+//   · Un faltante (negativo) se muestra SIEMPRE, aunque el talle no esté
+//     habilitado: un negativo nunca se oculta.
+//   · Sin stock y stock bajo solo cuentan en talles habilitados o en
+//     stock general (cierres / hebillas).
+//   · Se usa la fila vigente de stock general: los duplicados históricos
+//     no generan alertas repetidas.
+// ------------------------------------------------------------------
+
+const PRIORIDAD_ESTADO = { faltante: 0, sin_stock: 1, stock_bajo: 2, ok: 3 };
+
+/** 'faltante' | 'sin_stock' | 'stock_bajo' | 'ok' */
+function clasificarStock(stock, minimo) {
+  if (stock < 0) return 'faltante';
+  if (stock === 0) return 'sin_stock';
+  if (minimo > 0 && stock <= minimo) return 'stock_bajo';
+  return 'ok';
+}
+
+/** Alerta para una fila: 'faltante' | 'sin_stock' | 'stock_bajo' | null. */
+function clasificarFila(stock, minimo, habilitado) {
+  const c = clasificarStock(stock, minimo);
+  if (c === 'faltante') return c;
+  if (!habilitado || c === 'ok') return null;
+  return c;
+}
+
 /**
- * Insumos con stock bajo (stock <= stock_minimo) o faltantes (stock < 0).
+ * Estado resumido de un insumo (el peor de sus filas relevantes):
+ * 'faltante' | 'sin_stock' | 'stock_bajo' | 'ok'.
  */
+function estadoStock(insumo, filas, tallesHabilitados) {
+  const habilitados = new Set((tallesHabilitados || []).map(String));
+  let estado = 'ok';
+  for (const f of filas) {
+    const habilitado = f.talle === null || habilitados.has(String(f.talle));
+    const c = clasificarFila(f.stock, insumo.stock_minimo, habilitado) || 'ok';
+    if (PRIORIDAD_ESTADO[c] < PRIORIDAD_ESTADO[estado]) estado = c;
+  }
+  return estado;
+}
+
+/** Alertas de inventario (faltantes y stock bajo), sin duplicados. */
 function getAlertasStock() {
-  const db = getDb();
-  const rows = db.prepare(`
-    SELECT
-      i.id,
-      i.nombre,
-      i.tipo,
-      i.stock_minimo,
-      i.proveedor_id,
-      s.talle,
-      COALESCE(s.stock,0) AS stock,
-      p.nombre AS proveedor_nombre
-    FROM insumos i
-    LEFT JOIN insumo_stock s
-      ON s.insumo_id = i.id
-    LEFT JOIN insumo_talles it
-      ON it.insumo_id = i.id
-      AND it.talle = s.talle
-    LEFT JOIN proveedores p
-      ON p.id = i.proveedor_id
-    WHERE
-      (
-        i.tipo IN ('plantilla','fondo')
-        AND it.talle IS NOT NULL
-        AND COALESCE(s.stock,0) <= i.stock_minimo
-      )
-      OR
-      (
-        i.tipo IN ('cierre','hebilla')
-        AND COALESCE(s.stock,0) <= i.stock_minimo
-      )
-    ORDER BY stock ASC
-  `).all();
-  return rows;
+  const rows = all(`
+    SELECT i.id, i.nombre, i.tipo, i.stock_minimo, i.proveedor_id,
+           p.nombre AS proveedor_nombre,
+           s.id AS stock_id, s.talle, s.stock,
+           CASE WHEN s.talle IS NULL THEN 1
+                WHEN EXISTS (SELECT 1 FROM insumo_talles t WHERE t.insumo_id = i.id AND t.talle = s.talle) THEN 1
+                ELSE 0 END AS talle_habilitado,
+           (SELECT COUNT(*) FROM insumo_stock d WHERE d.insumo_id = i.id AND d.talle IS NULL) AS filas_generales
+    FROM insumo_stock s
+    JOIN insumos i ON i.id = s.insumo_id
+    LEFT JOIN proveedores p ON p.id = i.proveedor_id
+    WHERE s.talle IS NOT NULL
+       OR s.id = (SELECT MIN(x.id) FROM insumo_stock x WHERE x.insumo_id = s.insumo_id AND x.talle IS NULL)
+  `);
+
+  const alertas = [];
+  for (const r of rows) {
+    const tipo_alerta = clasificarFila(r.stock, r.stock_minimo, r.talle_habilitado === 1);
+    if (!tipo_alerta) continue;
+    const { filas_generales, ...resto } = r;
+    alertas.push({
+      ...resto,
+      talle_habilitado: r.talle_habilitado === 1,
+      conciliacion_pendiente: r.talle === null && filas_generales > 1,
+      tipo_alerta,
+    });
+  }
+  return alertas.sort((a, b) =>
+    PRIORIDAD_ESTADO[a.tipo_alerta] - PRIORIDAD_ESTADO[b.tipo_alerta] ||
+    a.stock - b.stock || a.nombre.localeCompare(b.nombre) || String(a.talle).localeCompare(String(b.talle)));
+}
+
+/** Plantillas y fondos sin talles habilitados: no pueden generar alertas de stock bajo. */
+function insumosSinTallesHabilitados() {
+  return all(`
+    SELECT i.id, i.nombre, i.tipo FROM insumos i
+    WHERE i.tipo IN ('plantilla','fondo')
+      AND NOT EXISTS (SELECT 1 FROM insumo_talles t WHERE t.insumo_id = i.id)
+    ORDER BY i.nombre`);
 }
 
 module.exports = {
+  normalizarTalle,
+  getStockRow,
   getStock,
   getStockRows,
+  contarFilasDuplicadas,
+  insumosConDuplicados,
   setStock,
   adjustStock,
+  usaTalle,
+  registrarMovimientoManual,
+  TIPOS_CON_TALLE,
   verificarStockOrden,
   consumirStockOrden,
   getAlertasStock,
+  clasificarStock,
+  clasificarFila,
+  estadoStock,
+  insumosSinTallesHabilitados,
 };

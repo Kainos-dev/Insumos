@@ -61,6 +61,7 @@ const ESTADO_LABELS = {
   cancelado:  'Cancelado',
   faltante:   'Faltante',
   stock_bajo: 'Stock bajo',
+  sin_stock:  'Sin stock',
 };
 
 function estadoBadge(estado) {
@@ -78,16 +79,29 @@ function estadoBadge(estado) {
   return `<span class="badge ${map[estado] || 'badge-gray'}">${escHtml(label)}</span>`;
 }
 
-// Estado de stock con color, forma y texto.
-// Usa las mismas reglas que el servidor: < 0 faltante, <= mínimo bajo.
-function stockEstado(stock, minimo) {
-  if (stock < 0) return { clase: 'falta', label: 'Faltante' };
-  if (stock <= minimo) return { clase: 'bajo', label: 'Stock bajo' };
-  return { clase: 'ok', label: 'OK' };
+// Estado de stock con color, forma y texto. Misma regla que el servidor:
+// negativo → Faltante · cero → Sin stock · 0 < stock ≤ mínimo (mínimo > 0) → Stock bajo · resto → OK
+const STOCK_ESTADOS = {
+  faltante:   { clase: 'falta', label: 'Faltante' },
+  sin_stock:  { clase: 'sin',   label: 'Sin stock' },
+  stock_bajo: { clase: 'bajo',  label: 'Stock bajo' },
+  ok:         { clase: 'ok',    label: 'OK' },
+};
+
+function clasificarStock(stock, minimo) {
+  if (stock < 0) return 'faltante';
+  if (stock === 0) return 'sin_stock';
+  if (minimo > 0 && stock <= minimo) return 'stock_bajo';
+  return 'ok';
 }
 
 function stockBadge(stock, minimo) {
-  const e = stockEstado(stock, minimo);
+  return estadoStockBadge(clasificarStock(stock, minimo));
+}
+
+// Estado ya calculado por el servidor ('faltante' | 'sin_stock' | 'stock_bajo' | 'ok')
+function estadoStockBadge(estado) {
+  const e = STOCK_ESTADOS[estado] || STOCK_ESTADOS.ok;
   return `<span class="stock-state stock-state--${e.clase}">${e.label}</span>`;
 }
 
@@ -99,7 +113,13 @@ const MOVIMIENTO_LABELS = {
   consumo_orden:  'Consumo de planilla',
   ingreso_pedido: 'Ingreso de pedido',
 };
-const REFERENCIA_LABELS = { orden: 'Planilla', pedido: 'Pedido' };
+const REFERENCIA_LABELS = {
+  orden: 'Planilla',
+  pedido: 'Pedido',
+  anulacion_orden: 'Anulación de planilla',
+  alta_insumo: 'Alta de insumo',
+  conciliacion: 'Conciliación',
+};
 
 function tipoBadge(tipo) {
   const map = {
@@ -112,9 +132,7 @@ function tipoBadge(tipo) {
 }
 
 function stockColor(stock, minimo) {
-  if (stock < 0) return 'text-red';
-  if (stock <= minimo) return 'text-gold';
-  return 'text-green';
+  return { faltante: 'text-red', sin_stock: 'text-orange', stock_bajo: 'text-gold', ok: 'text-green' }[clasificarStock(stock, minimo)];
 }
 
 function emptyState(msg = 'Sin datos') {
