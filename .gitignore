@@ -1,0 +1,36 @@
+# Dependencias instaladas
+node_modules/
+
+# Bases SQLite (datos reales: nunca versionar)
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Respaldos
+*.bundle
+respaldos/
+backups/
+
+# Variables de entorno y secretos
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Logs
+*.log
+npm-debug.log*
+logs/
+
+# Sistema, editores y herramientas locales
+.DS_Store
+desktop.ini
+.vscode/
+.idea/
+.vercel/
+supabase/.temp/
+coverage/

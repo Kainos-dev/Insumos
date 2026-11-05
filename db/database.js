@@ -1,15 +1,30 @@
 'use strict';
 
 const Database = require('better-sqlite3');
+const fs = require('fs');
 const path = require('path');
 
-const DB_PATH = path.join(__dirname, '..', 'calzado.db');
+// Configuración local opcional: si existe un archivo .env en la raíz del
+// proyecto (no versionado), se cargan sus variables. Las variables ya
+// definidas en la sesión tienen prioridad sobre las del archivo.
+const ENV_FILE = path.join(__dirname, '..', '.env');
+if (fs.existsSync(ENV_FILE) && typeof process.loadEnvFile === 'function') {
+  process.loadEnvFile(ENV_FILE);
+}
+
+// Ruta de la base SQLite. Si DB_PATH no está definida, se usa la ubicación histórica.
+const DB_PATH = process.env.DB_PATH
+  ? path.resolve(process.env.DB_PATH)
+  : path.join(__dirname, '..', 'calzado.db');
 
 let _db = null;
 
 function getDb() {
   if (_db) return _db;
-  _db = new Database(DB_PATH);
+  // Si se indicó DB_PATH, la base debe existir: evita crear en silencio una
+  // base vacía cuando la ruta está mal escrita.
+  _db = new Database(DB_PATH, { fileMustExist: Boolean(process.env.DB_PATH) });
+  console.log(`Base de datos: ${DB_PATH}`);
   _db.pragma('journal_mode = WAL');
   _db.pragma('foreign_keys = ON');
   initSchema(_db);
