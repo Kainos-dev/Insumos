@@ -2,6 +2,7 @@
 
 const { get, all, run, transaction, getDb } = require('../db/database');
 const { getStock, adjustStock } = require('./stockService');
+const { AppError } = require('../utils/errores');
 
 /**
  * Detect insumos that need ordering:
@@ -53,6 +54,14 @@ function getInsumosConStock() {
  * lineas = [{insumo_id, talle, cantidad}]
  */
 function crearPedido(proveedor_id, lineas) {
+  if (!get('SELECT id FROM proveedores WHERE id=?', [proveedor_id])) throw new AppError('Proveedor inexistente');
+  if (!Array.isArray(lineas) || !lineas.length) throw new AppError('El pedido necesita al menos una línea');
+  for (const l of lineas) {
+    const c = Number(l.cantidad);
+    if (!Number.isInteger(c) || c <= 0) throw new AppError('Cada línea debe tener una cantidad entera mayor que cero');
+    if (!get('SELECT id FROM insumos WHERE id=?', [l.insumo_id])) throw new AppError('Insumo inexistente en el pedido');
+    l.cantidad = c;
+  }
   let pedidoId;
   transaction(() => {
     const r = run('INSERT INTO pedidos_proveedor (proveedor_id) VALUES (?)', [proveedor_id]);
@@ -124,39 +133,59 @@ function getPedido(id) {
 }
 
 /**
- * Actualizar estado del pedido.
- * Estados válidos: borrador → enviado → recibido | cancelado
- * Al marcar 'recibido' se suma stock automáticamente respetando talles.
+ * Transiciones permitidas. 'recibido' y 'cancelado' son estados finales:
+ * un pedido recibido no puede volver atrás ni recibirse de nuevo.
+ */
+const TRANSICIONES = {
+  borrador:  ['enviado', 'cancelado'],
+  enviado:   ['recibido', 'cancelado'],
+  recibido:  [],
+  cancelado: [],
+};
+
+/**
+ * Cambia el estado de un pedido. Al pasar a 'recibido' suma el stock
+ * (respetando talles) en la MISMA transacción que el cambio de estado.
  */
 function actualizarEstado(id, estado) {
-  if (!['borrador', 'enviado', 'recibido', 'cancelado'].includes(estado)) {
-    throw new Error('Estado inválido');
+  if (!Object.prototype.hasOwnProperty.call(TRANSICIONES, estado)) {
+    throw new AppError('Estado inválido');
   }
-  if (estado === 'recibido') {
-    recibirPedido(id);
-  } else {
-    run('UPDATE pedidos_proveedor SET estado=? WHERE id=?', [estado, id]);
-  }
+  transaction(() => {
+    const pedido = get('SELECT * FROM pedidos_proveedor WHERE id=?', [id]);
+    if (!pedido) throw new AppError('Pedido no encontrado', 404);
+    if (!TRANSICIONES[pedido.estado].includes(estado)) {
+      throw new AppError(mensajeTransicion(pedido.estado, estado), 409);
+    }
+
+    // Cambio condicional: si otro proceso ya cambió el estado, no afecta filas.
+    const r = run(
+      `UPDATE pedidos_proveedor
+         SET estado = ?, recibido_at = CASE WHEN ? = 'recibido' THEN datetime('now','localtime') ELSE recibido_at END
+       WHERE id = ? AND estado = ?`,
+      [estado, estado, id, pedido.estado]
+    );
+    if (r.changes !== 1) throw new AppError('El pedido cambió de estado mientras se procesaba. Volvé a intentarlo.', 409);
+
+    if (estado === 'recibido') {
+      // Defensa adicional: un pedido solo puede generar ingresos una vez.
+      const previos = get(`SELECT COUNT(*) AS n FROM movimientos_stock
+                           WHERE referencia_tipo = 'pedido' AND referencia_id = ?`, [id]).n;
+      if (previos) throw new AppError('Este pedido ya registró ingresos de stock', 409);
+      const detalles = all('SELECT * FROM detalle_pedido_proveedor WHERE pedido_id=?', [id]);
+      for (const d of detalles) {
+        // talle puede ser NULL (cierres, hebillas) o un valor (plantillas, fondos)
+        adjustStock(d.insumo_id, d.talle || null, d.cantidad, 'ingreso_pedido', 'pedido', id);
+      }
+    }
+  });
 }
 
-function recibirPedido(pedidoId) {
-  const pedido = get('SELECT * FROM pedidos_proveedor WHERE id=?', [pedidoId]);
-  if (!pedido) throw new Error('Pedido no encontrado');
-  if (pedido.estado === 'recibido') throw new Error('El pedido ya fue recibido');
-  if (pedido.estado === 'cancelado') throw new Error('No se puede recibir un pedido cancelado');
-
-  const detalles = all('SELECT * FROM detalle_pedido_proveedor WHERE pedido_id=?', [pedidoId]);
-
-  transaction(() => {
-    for (const d of detalles) {
-      // talle puede ser NULL (cierres, hebillas) o un valor (plantillas, fondos)
-      adjustStock(d.insumo_id, d.talle || null, d.cantidad, 'ingreso_pedido', 'pedido', pedidoId);
-    }
-    run(
-      `UPDATE pedidos_proveedor SET estado='recibido', recibido_at=datetime('now','localtime') WHERE id=?`,
-      [pedidoId]
-    );
-  });
+function mensajeTransicion(desde, hacia) {
+  if (desde === 'recibido') return 'El pedido ya fue recibido: no puede cambiar de estado ni recibirse de nuevo';
+  if (desde === 'cancelado') return 'El pedido está cancelado: no puede cambiar de estado';
+  if (desde === hacia) return `El pedido ya está en estado "${desde}"`;
+  return `No se puede pasar un pedido de "${desde}" a "${hacia}"`;
 }
 
 module.exports = {

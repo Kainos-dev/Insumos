@@ -28,21 +28,14 @@ router.post('/', (req, res) => {
   if (!proveedor_id || !lineas || !lineas.length) {
     return res.status(400).json({ error: 'proveedor_id y lineas son requeridos' });
   }
-  try {
-    const id = svc.crearPedido(proveedor_id, lineas);
-    res.json({ id });
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
+  const id = svc.crearPedido(Number(proveedor_id), lineas);
+  res.json({ id });
 });
 
+// Errores de negocio (AppError) los responde el manejador central con su código
 router.put('/:id/estado', (req, res) => {
-  try {
-    svc.actualizarEstado(Number(req.params.id), req.body.estado);
-    res.json({ ok: true });
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
+  svc.actualizarEstado(Number(req.params.id), req.body.estado);
+  res.json({ ok: true });
 });
 
 module.exports = router;
