@@ -148,15 +148,43 @@ function validarResponsable(responsable_id) {
 }
 
 /**
+ * Pedidos ABIERTOS (borrador o enviado) con responsable que contienen el
+ * insumo y quedarían incompatibles si pasara a `nuevoResponsable`
+ * (null = quitar responsable). Los pedidos históricos sin responsable no cuentan.
+ */
+function pedidosAbiertosIncompatibles(insumo_id, nuevoResponsable) {
+  return all(`
+    SELECT DISTINCT p.id, p.estado, r.nombre AS responsable_nombre
+    FROM detalle_pedido_proveedor d
+    JOIN pedidos_proveedor p ON p.id = d.pedido_id AND p.estado IN ('borrador','enviado')
+    JOIN pedido_responsable pr ON pr.pedido_id = p.id
+    JOIN responsables r ON r.id = pr.responsable_id
+    WHERE d.insumo_id = ? AND (? IS NULL OR pr.responsable_id <> ?)
+    ORDER BY p.id`, [insumo_id, nuevoResponsable, nuevoResponsable]);
+}
+
+/**
  * Asigna, cambia o quita (responsable_id = null) el responsable de un insumo.
- * No toca stock, movimientos ni historiales.
+ * Se bloquea si deja incompatible algún pedido abierto. No toca stock,
+ * movimientos ni historiales.
  */
 function asignar(insumo_id, responsable_id) {
   assertDisponible();
   let resultado;
   transaction(() => {
-    if (!get('SELECT id FROM insumos WHERE id = ?', [insumo_id])) throw new AppError('Insumo no encontrado', 404);
+    const insumo = get('SELECT id, nombre FROM insumos WHERE id = ?', [insumo_id]);
+    if (!insumo) throw new AppError('Insumo no encontrado', 404);
     const rid = validarResponsable(responsable_id);
+    const actual = get('SELECT responsable_id FROM insumo_responsable WHERE insumo_id = ?', [insumo_id]);
+    if ((actual ? actual.responsable_id : null) !== rid) {
+      const conflictos = pedidosAbiertosIncompatibles(insumo_id, rid);
+      if (conflictos.length) {
+        const lista = conflictos.map(c => `#${c.id} de ${c.responsable_nombre} (${c.estado})`).join(', ');
+        throw new AppError(
+          `No se puede ${rid === null ? 'quitar' : 'cambiar'} el responsable de «${insumo.nombre}»: ` +
+          `está en pedidos abiertos de otro responsable: ${lista}. Recibí o cancelá esos pedidos primero.`, 409);
+      }
+    }
     if (rid === null) {
       run('DELETE FROM insumo_responsable WHERE insumo_id = ?', [insumo_id]);
     } else {
@@ -184,28 +212,32 @@ function asignarVarios(asignaciones) {
 // ——— Pedidos ———
 
 /**
- * Responsable de un conjunto de líneas de pedido.
- * Devuelve el responsable común (o null si todos los insumos están sin
- * asignar). Rechaza mezclas: distintos responsables, o asignados con
- * no asignados.
+ * Responsable de las líneas de un pedido NUEVO (reglas definitivas):
+ * · todos los insumos deben tener responsable asignado;
+ * · todos deben pertenecer al mismo responsable.
+ * Devuelve el id del responsable común.
  */
 function responsableDeLineas(lineas) {
-  if (!disponible()) return null;
+  assertDisponible();
   const grupos = new Map();
   for (const l of lineas) {
     const rid = responsableDeInsumo(l.insumo_id);
-    if (!grupos.has(rid)) grupos.set(rid, []);
-    grupos.get(rid).push(l.insumo_id);
+    if (!grupos.has(rid)) grupos.set(rid, new Set());
+    grupos.get(rid).add(l.insumo_id);
+  }
+  if (grupos.has(null)) {
+    const nombres = [...grupos.get(null)].map(id => get('SELECT nombre FROM insumos WHERE id = ?', [id]).nombre);
+    throw new AppError(`Estos insumos no tienen responsable asignado: ${nombres.join(', ')}. Asignalos desde Fábrica antes de pedirlos.`);
   }
   if (grupos.size > 1) {
-    const nombres = [...grupos.keys()].map(id => (id === null ? 'sin responsable' : getResponsable(id).nombre));
+    const nombres = [...grupos.keys()].map(id => getResponsable(id).nombre);
     throw new AppError(`Todos los insumos de un pedido deben pertenecer al mismo responsable. Este pedido mezcla: ${nombres.join(', ')}.`);
   }
-  return [...grupos.keys()][0] ?? null;
+  return [...grupos.keys()][0];
 }
 
 function asignarPedido(pedido_id, responsable_id) {
-  if (responsable_id === null || !disponible()) return;
+  if (!Number.isInteger(responsable_id)) throw new AppError('El pedido necesita un responsable');
   run('INSERT INTO pedido_responsable (pedido_id, responsable_id) VALUES (?, ?)', [pedido_id, responsable_id]);
 }
 
@@ -213,8 +245,10 @@ function asignarPedido(pedido_id, responsable_id) {
  * Diagnóstico de pedidos frente a las reglas nuevas (solo lectura).
  * · mezcla: sus insumos pertenecen hoy a más de un responsable (o mezclan
  *   asignados y sin asignar).
- * · desalineado: el pedido tiene responsable pero algún insumo hoy
- *   pertenece a otro (por una reasignación posterior).
+ * · desalineado: pedido ABIERTO con responsable cuyo insumo hoy pertenece
+ *   a otro. Las reglas de reasignación lo impiden; solo podría aparecer
+ *   por cambios hechos fuera de la aplicación. En pedidos cerrados
+ *   (recibidos o cancelados) una reasignación posterior es normal.
  * · sin_responsable: pedidos (históricos o sin asignar) sin responsable.
  */
 function diagnosticoPedidos() {
@@ -238,7 +272,7 @@ function diagnosticoPedidos() {
     if (!f.responsable_pedido) res.sin_responsable++;
     if (ids.length > 1) {
       res.mezcla.push({ id: f.id, estado: f.estado, proveedor_nombre: f.proveedor_nombre, responsables: etiqueta });
-    } else if (f.responsable_pedido && ids[0] !== f.responsable_pedido) {
+    } else if (f.responsable_pedido && ids[0] !== f.responsable_pedido && (f.estado === 'borrador' || f.estado === 'enviado')) {
       res.desalineado.push({ id: f.id, estado: f.estado, proveedor_nombre: f.proveedor_nombre,
         responsable_pedido: nombres.get(f.responsable_pedido), responsables: etiqueta });
     }

@@ -53,17 +53,65 @@ const MIGRACIONES = [
       `);
     },
   },
+  {
+    id: '003_reglas_responsables',
+    descripcion: 'Reglas en la base: no reasignar insumos con pedidos abiertos de otro responsable; responsable del pedido inmutable',
+    up(db) {
+      // Triggers SOLO sobre tablas nuevas de E4. Los pedidos sin responsable
+      // (históricos) no participan de estas reglas.
+      db.exec(`
+        CREATE TRIGGER IF NOT EXISTS trg_ir_reasignacion_abiertos
+        BEFORE UPDATE OF responsable_id ON insumo_responsable
+        WHEN NEW.responsable_id <> OLD.responsable_id
+        BEGIN
+          SELECT RAISE(ABORT, 'REASIGNACION_CON_PEDIDOS_ABIERTOS')
+          WHERE EXISTS (
+            SELECT 1 FROM detalle_pedido_proveedor d
+            JOIN pedidos_proveedor p ON p.id = d.pedido_id AND p.estado IN ('borrador','enviado')
+            JOIN pedido_responsable pr ON pr.pedido_id = p.id
+            WHERE d.insumo_id = NEW.insumo_id AND pr.responsable_id <> NEW.responsable_id);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_ir_desasignacion_abiertos
+        BEFORE DELETE ON insumo_responsable
+        BEGIN
+          SELECT RAISE(ABORT, 'REASIGNACION_CON_PEDIDOS_ABIERTOS')
+          WHERE EXISTS (
+            SELECT 1 FROM detalle_pedido_proveedor d
+            JOIN pedidos_proveedor p ON p.id = d.pedido_id AND p.estado IN ('borrador','enviado')
+            JOIN pedido_responsable pr ON pr.pedido_id = p.id
+            WHERE d.insumo_id = OLD.insumo_id);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_pr_inmutable
+        BEFORE UPDATE ON pedido_responsable
+        BEGIN
+          SELECT RAISE(ABORT, 'PEDIDO_RESPONSABLE_INMUTABLE');
+        END;
+      `);
+    },
+  },
 ];
 
 const TABLA_CONTROL = 'schema_migraciones';
 
 /** SQL para revertir por completo las migraciones de E4 (plan de recuperación). */
 const SQL_REVERSION = `
+  DROP TRIGGER IF EXISTS trg_ir_reasignacion_abiertos;
+  DROP TRIGGER IF EXISTS trg_ir_desasignacion_abiertos;
+  DROP TRIGGER IF EXISTS trg_pr_inmutable;
   DROP TABLE IF EXISTS pedido_responsable;
   DROP TABLE IF EXISTS insumo_responsable;
   DROP TABLE IF EXISTS responsables;
-  DELETE FROM ${TABLA_CONTROL} WHERE id IN ('001_responsables', '002_pedido_responsable');
+  DELETE FROM ${TABLA_CONTROL} WHERE id IN ('001_responsables', '002_pedido_responsable', '003_reglas_responsables');
 `;
+
+/** Objetos que crean las migraciones de E4 (para verificar que no se crea nada más). */
+const OBJETOS_E4 = {
+  tablas: ['responsables', 'insumo_responsable', 'pedido_responsable', 'schema_migraciones'],
+  indices: ['ix_insumo_responsable_responsable', 'ix_pedido_responsable_responsable'],
+  triggers: ['trg_ir_reasignacion_abiertos', 'trg_ir_desasignacion_abiertos', 'trg_pr_inmutable'],
+};
 
 function existeTabla(db, nombre) {
   return !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(nombre);
@@ -99,4 +147,4 @@ function aplicarPendientes(db) {
   return aplicar();
 }
 
-module.exports = { MIGRACIONES, TABLA_CONTROL, SQL_REVERSION, aplicadas, pendientes, aplicarPendientes, existeTabla };
+module.exports = { MIGRACIONES, TABLA_CONTROL, SQL_REVERSION, OBJETOS_E4, aplicadas, pendientes, aplicarPendientes, existeTabla };

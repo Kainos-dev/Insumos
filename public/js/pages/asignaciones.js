@@ -51,7 +51,8 @@ function dibujarAsignaciones() {
       <span class="notice-icon" aria-hidden="true">ℹ</span>
       <div>
         <strong>${sinAsignar ? `${sinAsignar} de ${_asig.insumos.length} insumos sin responsable.` : 'Todos los insumos tienen responsable.'}</strong>
-        <p>Cada insumo tiene un único responsable de reposición. Asignar o cambiar responsables no modifica stock, movimientos ni historiales.</p>
+        <p>Cada insumo tiene un único responsable de reposición. Asignar o cambiar responsables no modifica stock, movimientos ni historiales.
+        No se puede cambiar el responsable de un insumo que está en pedidos abiertos de otro responsable.</p>
       </div>
     </div>
 
@@ -114,7 +115,7 @@ async function asigCambiar(insumoId, sel) {
     dibujarAsignaciones();
   } catch (e) {
     toast(e.message, 'error');
-    sel.disabled = false;
+    dibujarAsignaciones();   // el selector vuelve al responsable vigente
   }
 }
 

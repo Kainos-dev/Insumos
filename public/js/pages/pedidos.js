@@ -257,18 +257,21 @@ async function modalGenerarPedido() {
     '<option value="' + p.id + '">' + escHtml(p.nombre) + '</option>'
   ).join('');
 
-  // Un pedido corresponde a un solo responsable: se elige primero y solo se
-  // ofrecen sus insumos. El servidor vuelve a validarlo.
-  const respHtml = _pedResponsables
-    ? '<div class="form-group">' +
-        '<label class="form-label" for="pedResponsableSel">Responsable *</label>' +
-        '<select class="form-select" id="pedResponsableSel" onchange="onPedProveedorChange()">' +
-          _pedResponsables.map(r => '<option value="' + r.id + '">' + escHtml(r.nombre) + '</option>').join('') +
-          '<option value="">Sin responsable asignado</option>' +
-        '</select>' +
-        '<div class="form-hint">Todos los insumos de un pedido deben pertenecer al mismo responsable.</div>' +
-      '</div>'
-    : '';
+  // Todo pedido nuevo tiene responsable obligatorio: se elige primero y solo
+  // se ofrecen sus insumos. El servidor vuelve a validarlo.
+  if (!_pedResponsables) {
+    Modal.open('Generar Pedido a Proveedor', avisoMigracionPendiente('Los pedidos nuevos necesitan un responsable.') +
+      '<div class="modal-footer"><button class="btn" onclick="Modal.close()">Cerrar</button></div>');
+    return;
+  }
+  const respHtml =
+    '<div class="form-group">' +
+      '<label class="form-label" for="pedResponsableSel">Responsable *</label>' +
+      '<select class="form-select" id="pedResponsableSel" onchange="onPedProveedorChange()">' +
+        _pedResponsables.map(r => '<option value="' + r.id + '">' + escHtml(r.nombre) + '</option>').join('') +
+      '</select>' +
+      '<div class="form-hint">Todos los insumos del pedido deben estar asignados a este responsable.</div>' +
+    '</div>';
 
   const html =
     '<div class="form-row">' +
@@ -313,20 +316,18 @@ function onPedProveedorChange() {
  * Construye una fila de insumo para el pedido.
  * Muestra el stock actual al lado del selector, siempre visible.
  */
-/** Responsable elegido: undefined si no hay gestión de responsables, null si "sin responsable". */
+/** Responsable elegido en el formulario (obligatorio). */
 function pedResponsableElegido() {
-  if (!_pedResponsables) return undefined;
   const v = document.getElementById('pedResponsableSel')?.value;
   return v ? Number(v) : null;
 }
 
 function buildPedLinea(idx, provId) {
   const resp = pedResponsableElegido();
-  const insumosDeEste = _pedAllInsumos.filter(i => i.proveedor_id === provId &&
-    (resp === undefined || (resp === null ? !i.responsable : i.responsable && i.responsable.id === resp)));
+  const insumosDeEste = _pedAllInsumos.filter(i => i.proveedor_id === provId && i.responsable && i.responsable.id === resp);
   if (!insumosDeEste.length) {
     return '<div class="ped-linea text-muted text-small" style="padding:8px 0">' +
-      'Este proveedor no tiene insumos ' + (resp === undefined ? '' : resp === null ? 'sin responsable' : 'asignados a ese responsable') + '.</div>';
+      'Este proveedor no tiene insumos asignados a ese responsable. Las asignaciones se hacen en Fábrica › Asignar responsables.</div>';
   }
 
   const opts = insumosDeEste.map(i =>
@@ -512,10 +513,8 @@ async function crearPedido() {
   }
 
   try {
-    const body = { proveedor_id, lineas };
-    const resp = pedResponsableElegido();
-    if (resp !== undefined) body.responsable_id = resp;   // el servidor valida que coincida
-    const { id } = await API.pedidos.create(body);
+    // El servidor valida que todos los insumos sean de este responsable
+    const { id } = await API.pedidos.create({ proveedor_id, lineas, responsable_id: pedResponsableElegido() });
     toast('Pedido generado', 'success');
     Modal.close();
     renderPedidoDetalle(id);

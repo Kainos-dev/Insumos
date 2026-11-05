@@ -54,13 +54,11 @@ function getInsumosConStock() {
  * Crea un pedido en borrador.
  * lineas = [{insumo_id, talle, cantidad}]
  *
- * Responsable (validado en el servidor):
- * · El responsable del pedido es el de sus insumos; todos deben pertenecer
- *   al mismo responsable. Se rechazan mezclas (distintos responsables, o
- *   insumos asignados con insumos sin asignar).
- * · Si todos los insumos están sin asignar, el pedido queda sin responsable
- *   (transición mientras se completan las asignaciones).
- * · responsableEsperado (opcional, el elegido en pantalla) debe coincidir.
+ * Responsable (reglas definitivas, validadas en el servidor):
+ * · Todo pedido nuevo tiene responsable obligatorio (responsableEsperado).
+ * · Todos sus insumos deben tener responsable y ser de ese mismo responsable.
+ * · No se aceptan insumos sin asignar ni mezclas.
+ * · Los pedidos históricos sin responsable no se modifican.
  */
 function crearPedido(proveedor_id, lineas, responsableEsperado) {
   if (!get('SELECT id FROM proveedores WHERE id=?', [proveedor_id])) throw new AppError('Proveedor inexistente');
@@ -72,11 +70,11 @@ function crearPedido(proveedor_id, lineas, responsableEsperado) {
     l.cantidad = c;
   }
   const responsableId = responsables.responsableDeLineas(lineas);
-  if (responsableEsperado !== undefined) {
-    const esperado = responsableEsperado === null || responsableEsperado === '' ? null : Number(responsableEsperado);
-    if (esperado !== responsableId) {
-      throw new AppError('Los insumos del pedido no corresponden al responsable elegido');
-    }
+  if (responsableEsperado === undefined || responsableEsperado === null || responsableEsperado === '') {
+    throw new AppError('Indicá el responsable del pedido');
+  }
+  if (Number(responsableEsperado) !== responsableId) {
+    throw new AppError('Los insumos del pedido no corresponden al responsable elegido');
   }
   let pedidoId;
   transaction(() => {

@@ -23,7 +23,7 @@ const os = require('os');
 const net = require('net');
 const path = require('path');
 const Database = require('better-sqlite3');
-const { pendientes, aplicadas, aplicarPendientes, SQL_REVERSION, TABLA_CONTROL } = require('../db/migraciones');
+const { pendientes, aplicadas, aplicarPendientes, SQL_REVERSION, TABLA_CONTROL, OBJETOS_E4 } = require('../db/migraciones');
 const { huellaInventario } = require('../db/huella');
 
 const arg = (argv, n) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : undefined; };
@@ -61,7 +61,35 @@ function estado(dbPath) {
   }));
 }
 
-/** Aplica pendientes con verificación de huella dentro de la misma transacción. */
+/** Objetos del esquema (tablas, índices, triggers) con su SQL. */
+function esquema(db) {
+  return db.prepare("SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name").all();
+}
+
+/**
+ * Comprueba que los objetos existentes no cambiaron y que lo nuevo es
+ * exactamente lo previsto por E4. Devuelve los nombres de objetos nuevos.
+ */
+function verificarEsquema(antes, despues) {
+  const clave = o => `${o.type}:${o.name}`;
+  const mapaDespues = new Map(despues.map(o => [clave(o), o]));
+  for (const o of antes) {
+    const d = mapaDespues.get(clave(o));
+    if (!d || d.sql !== o.sql || d.tbl_name !== o.tbl_name) throw new Error(`Cambió un objeto existente del esquema: ${clave(o)}`);
+  }
+  const previstos = new Set([...OBJETOS_E4.tablas, ...OBJETOS_E4.indices, ...OBJETOS_E4.triggers]);
+  const nombresAntes = new Set(antes.map(clave));
+  const nuevos = despues.filter(o => !nombresAntes.has(clave(o)));
+  for (const o of nuevos) {
+    if (!previstos.has(o.name)) throw new Error(`Objeto no previsto creado por la migración: ${clave(o)}`);
+    if (o.type === 'trigger' && !OBJETOS_E4.tablas.includes(o.tbl_name)) {
+      throw new Error(`Trigger sobre una tabla existente (no permitido): ${o.name} en ${o.tbl_name}`);
+    }
+  }
+  return nuevos.map(clave);
+}
+
+/** Aplica pendientes con verificación de huella y de esquema dentro de la misma transacción. */
 function aplicar(dbPath) {
   const db = new Database(dbPath, { fileMustExist: true });
   try {
@@ -69,15 +97,19 @@ function aplicar(dbPath) {
     const integridad = db.pragma('integrity_check', { simple: true });
     if (integridad !== 'ok') throw new Error(`integrity_check = ${integridad}`);
     const antes = huellaInventario(db);
+    const esquemaAntes = esquema(db);
+    let objetosNuevos = [];
     const ids = db.transaction(() => {
       const r = aplicarPendientes(db);
       const despues = huellaInventario(db);
       if (despues.total !== antes.total) throw new Error('La huella del inventario cambió: se revierte la migración');
+      objetosNuevos = verificarEsquema(esquemaAntes, esquema(db));
       return r;
     })();
     const despues = huellaInventario(db);
     const resumen = {
       aplicado: new Date().toISOString(), base: dbPath, migraciones: ids,
+      objetos_nuevos: objetosNuevos,
       integridad_despues: db.pragma('integrity_check', { simple: true }),
       inventario_sin_cambios: antes.total === despues.total,
       huella_inventario: despues.total,
@@ -150,4 +182,4 @@ async function main(argv) {
 
 if (require.main === module) main(process.argv.slice(2)).then(c => { process.exitCode = c; });
 
-module.exports = { estado, aplicar, revertir, servidorActivo };
+module.exports = { estado, aplicar, revertir, servidorActivo, esquema, verificarEsquema };

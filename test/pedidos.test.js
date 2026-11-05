@@ -9,13 +9,18 @@ const svc = require('../services/pedidosService');
 after(async () => { await (await srv).cerrar(); base.cerrar(); });
 
 let e;
-beforeEach(() => { e = h.escenarioBase({ stockPlantilla: 10, stockCierre: 50 }); });
+beforeEach(() => {
+  e = h.escenarioBase({ stockPlantilla: 10, stockCierre: 50 });
+  // Regla vigente: todo pedido nuevo exige insumos asignados a un mismo responsable
+  h.asignarDirecto(e.plantilla, 'ruben');
+  h.asignarDirecto(e.cierre, 'ruben');
+});
 
 const stockDe = (id, talle) => h.filasStock(id).find(r => r.talle === (talle == null ? null : String(talle))).stock;
 const nuevoPedido = () => svc.crearPedido(e.prov, [
   { insumo_id: e.plantilla, talle: '38', cantidad: 7 },
   { insumo_id: e.cierre, talle: null, cantidad: 20 },
-]);
+], h.responsableId('ruben'));
 const estado = async (id, est) => (await srv).req('PUT', `/api/pedidos/${id}/estado`, { estado: est });
 
 test('flujo normal: borrador → enviado → recibido suma el stock una vez', async () => {
@@ -83,6 +88,7 @@ test('estados y pedidos inválidos', async () => {
   assert.equal((await estado(id, 'perdido')).status, 400);
   assert.equal((await estado(999999, 'enviado')).status, 404);
   const { req } = await srv;
-  assert.equal((await req('POST', '/api/pedidos', { proveedor_id: e.prov, lineas: [{ insumo_id: e.cierre, cantidad: 0 }] })).status, 400);
-  assert.equal((await req('POST', '/api/pedidos', { proveedor_id: 999999, lineas: [{ insumo_id: e.cierre, cantidad: 1 }] })).status, 400);
+  const rid = h.responsableId('ruben');
+  assert.equal((await req('POST', '/api/pedidos', { proveedor_id: e.prov, responsable_id: rid, lineas: [{ insumo_id: e.cierre, cantidad: 0 }] })).status, 400);
+  assert.equal((await req('POST', '/api/pedidos', { proveedor_id: 999999, responsable_id: rid, lineas: [{ insumo_id: e.cierre, cantidad: 1 }] })).status, 400);
 });

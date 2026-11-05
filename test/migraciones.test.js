@@ -27,21 +27,22 @@ test('sin migrar: el sistema funciona y responsables avisa que falta la migraci�
   assert.ok(ins.every(i => i.responsable === null));
   const est = (await api('GET', '/api/responsables/estado')).data;
   assert.equal(est.disponible, false);
-  assert.deepEqual(est.migraciones_pendientes.map(m => m.id), ['001_responsables', '002_pedido_responsable']);
+  assert.deepEqual(est.migraciones_pendientes.map(m => m.id), ['001_responsables', '002_pedido_responsable', '003_reglas_responsables']);
   assert.equal((await api('GET', '/api/responsables/ruben/panel')).status, 503);
   assert.equal((await api('PUT', `/api/insumos/${e.cierre}/responsable`, { responsable_id: 1 })).status, 503);
   const dash = (await api('GET', '/api/dashboard')).data;
   assert.equal(dash.responsables.disponible, false);
+  assert.equal((await api('GET', '/api/pedidos')).status, 200, 'los pedidos existentes siguen consultables');
   const ped = await api('POST', '/api/pedidos', { proveedor_id: e.prov, lineas: [{ insumo_id: e.cierre, cantidad: 3 }] });
-  assert.equal(ped.status, 200, 'los pedidos siguen funcionando sin la migración');
-  assert.equal((await api('GET', `/api/pedidos/${ped.data.id}`)).data.responsable_id, null);
+  assert.equal(ped.status, 503, 'sin responsables no se pueden crear pedidos nuevos (responsable obligatorio)');
+  assert.equal(h.db().prepare('SELECT COUNT(*) n FROM pedidos_proveedor').get().n, 0);
   assert.ok(!migraciones.existeTabla(h.db(), migraciones.TABLA_CONTROL), 'el servidor no aplicó nada por su cuenta');
 });
 
 test('aplicar: crea las tablas y los 3 responsables, sin asignar insumos ni tocar el inventario', async () => {
   const antes = huellaInventario(h.db());
   const ids = migraciones.aplicarPendientes(h.db());
-  assert.deepEqual(ids, ['001_responsables', '002_pedido_responsable']);
+  assert.deepEqual(ids, ['001_responsables', '002_pedido_responsable', '003_reglas_responsables']);
   assert.deepEqual(huellaInventario(h.db()), antes);
   assert.deepEqual(h.db().prepare('SELECT slug, nombre, activo FROM responsables ORDER BY id').all(),
     [{ slug: 'ruben', nombre: 'Rubén', activo: 1 }, { slug: 'dani', nombre: 'Dani', activo: 1 }, { slug: 'jorge', nombre: 'Jorge', activo: 1 }]);
@@ -56,7 +57,18 @@ test('idempotente: aplicar otra vez o reejecutar cada paso no duplica nada', () 
   assert.deepEqual(migraciones.aplicarPendientes(h.db()), []);
   for (const m of migraciones.MIGRACIONES) m.up(h.db());
   assert.equal(h.db().prepare('SELECT COUNT(*) n FROM responsables').get().n, 3);
-  assert.equal(h.db().prepare(`SELECT COUNT(*) n FROM ${migraciones.TABLA_CONTROL}`).get().n, 2);
+  assert.equal(h.db().prepare(`SELECT COUNT(*) n FROM ${migraciones.TABLA_CONTROL}`).get().n, 3);
+});
+
+test('verificación de esquema: detecta cambios en objetos existentes u objetos no previstos', () => {
+  const { verificarEsquema } = require('../scripts/migrar');
+  const base = [{ type: 'table', name: 'insumos', tbl_name: 'insumos', sql: 'CREATE TABLE insumos (id)' }];
+  assert.throws(() => verificarEsquema(base, [{ ...base[0], sql: 'CREATE TABLE insumos (id, extra)' }]), /Cambió un objeto existente/);
+  assert.throws(() => verificarEsquema(base, [...base, { type: 'table', name: 'otra', tbl_name: 'otra', sql: 'x' }]), /no previsto/);
+  assert.throws(() => verificarEsquema(base, [...base,
+    { type: 'trigger', name: 'trg_pr_inmutable', tbl_name: 'insumos', sql: 'x' }]), /tabla existente/);
+  assert.deepEqual(verificarEsquema(base, [...base, { type: 'table', name: 'responsables', tbl_name: 'responsables', sql: 'x' }]),
+    ['table:responsables']);
 });
 
 // ——— Script scripts/migrar.js sobre una base aparte (simula la base real) ———
@@ -118,6 +130,11 @@ test('script: aplicar conserva el inventario, deja registro y revertir vuelve at
   const res = JSON.parse(r.stdout);
   assert.equal(res.inventario_sin_cambios, true);
   assert.equal(res.integridad_despues, 'ok');
+  assert.deepEqual(res.objetos_nuevos.sort(), [
+    'index:ix_insumo_responsable_responsable', 'index:ix_pedido_responsable_responsable',
+    'table:insumo_responsable', 'table:pedido_responsable', 'table:responsables', 'table:schema_migraciones',
+    'trigger:trg_ir_desasignacion_abiertos', 'trigger:trg_ir_reasignacion_abiertos', 'trigger:trg_pr_inmutable',
+  ]);
   assert.equal(res.insumos_asignados, 0);
   assert.deepEqual(res.responsables.map(x => x.slug), ['ruben', 'dani', 'jorge']);
   assert.ok(fs.existsSync(res.archivo_registro));
@@ -132,7 +149,8 @@ test('script: aplicar conserva el inventario, deja registro y revertir vuelve at
   const d = new Database(f, { readonly: true });
   assert.ok(!migraciones.existeTabla(d, 'responsables'));
   assert.ok(!migraciones.existeTabla(d, 'insumo_responsable'));
-  assert.equal(migraciones.pendientes(d).length, 2);
+  assert.equal(migraciones.pendientes(d).length, 3);
+  assert.equal(d.prepare("SELECT COUNT(*) n FROM sqlite_master WHERE type='trigger'").get().n, 0, 'sin triggers residuales');
   d.close();
   assert.deepEqual(huellaArchivo(f), antes);
   fs.rmSync(dir, { recursive: true, force: true });

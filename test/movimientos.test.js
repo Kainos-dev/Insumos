@@ -49,7 +49,8 @@ test('integridad: la suma de movimientos explica cada cambio de stock', async ()
   const { data: { id } } = await api('POST', '/api/ordenes', {});
   await api('POST', `/api/ordenes/${id}/detalles-bulk`, { producto_id: e.producto, lineas: [{ talle: '38', cantidad: 20 }] });
   await api('POST', `/api/ordenes/${id}/confirmar`);
-  const ped = pedidos.crearPedido(e.prov, [{ insumo_id: e.cierre, cantidad: 6 }]);
+  h.asignarDirecto(e.cierre, 'dani');
+  const ped = pedidos.crearPedido(e.prov, [{ insumo_id: e.cierre, cantidad: 6 }], h.responsableId('dani'));
   pedidos.actualizarEstado(ped, 'enviado');
   pedidos.actualizarEstado(ped, 'recibido');
   await api('POST', `/api/ordenes/${id}/cancelar`);
