@@ -3,7 +3,7 @@
 const express = require('express');
 const router = express.Router();
 const { all, get } = require('../db/database');
-const { getAlertasStock } = require('../services/stockService');
+const { getAlertasStock, insumosConDuplicados, insumosSinTallesHabilitados } = require('../services/stockService');
 
 router.get('/', (req, res) => {
   const alertas = getAlertasStock();
@@ -32,8 +32,8 @@ router.get('/', (req, res) => {
     ordenes_borrador: get("SELECT COUNT(*) AS n FROM ordenes_produccion WHERE estado='borrador'").n,
   };
 
-  const stock_bajo = alertas.filter(a => a.stock >= 0);
-  const faltantes = alertas.filter(a => a.stock < 0);
+  const stock_bajo = alertas.filter(a => a.tipo_alerta === 'stock_bajo');
+  const faltantes = alertas.filter(a => a.tipo_alerta === 'faltante');
 
   res.json({
     totales,
@@ -41,6 +41,11 @@ router.get('/', (req, res) => {
     faltantes,
     ordenes_recientes,
     pedidos_pendientes,
+    // Situaciones de configuración o de datos que requieren revisión
+    avisos: {
+      conciliacion: insumosConDuplicados(),
+      sin_talles: insumosSinTallesHabilitados(),
+    },
   });
 });
 

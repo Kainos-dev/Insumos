@@ -1,7 +1,7 @@
 'use strict';
 
 const { get, all, run, transaction, getDb } = require('../db/database');
-const { getStock, adjustStock } = require('./stockService');
+const { getStock, adjustStock, getAlertasStock } = require('./stockService');
 const { AppError } = require('../utils/errores');
 
 /**
@@ -10,25 +10,25 @@ const { AppError } = require('../utils/errores');
  * - stock < 0 (real deficit)
  */
 function detectarFaltantes() {
-  const db = getDb();
-  const rows = db.prepare(`
-    SELECT i.id AS insumo_id, i.nombre, i.tipo, i.stock_minimo, i.proveedor_id,
-           p.nombre AS proveedor_nombre,
-           s.talle, s.stock
-    FROM insumos i
-    JOIN insumo_stock s ON s.insumo_id = i.id
-    LEFT JOIN proveedores p ON p.id = i.proveedor_id
-    WHERE COALESCE(s.stock,0) <= i.stock_minimo
-    ORDER BY i.proveedor_id, i.nombre, s.talle
-  `).all();
-
-  return rows.map(r => ({
-    ...r,
-    sugerido: r.stock < 0
-      ? r.stock_minimo + Math.abs(r.stock)
-      : r.stock_minimo - r.stock + Math.ceil(r.stock_minimo * 0.2),
-    tipo_alerta: r.stock < 0 ? 'faltante' : 'stock_bajo',
-  }));
+  // Mismas reglas que las alertas del dashboard (sin duplicados).
+  return getAlertasStock()
+    .map(r => ({
+      insumo_id: r.id,
+      nombre: r.nombre,
+      tipo: r.tipo,
+      stock_minimo: r.stock_minimo,
+      proveedor_id: r.proveedor_id,
+      proveedor_nombre: r.proveedor_nombre,
+      talle: r.talle,
+      stock: r.stock,
+      talle_habilitado: r.talle_habilitado,
+      sugerido: r.stock < 0
+        ? r.stock_minimo + Math.abs(r.stock)
+        : r.stock_minimo - r.stock + Math.ceil(r.stock_minimo * 0.2),
+      tipo_alerta: r.tipo_alerta,
+    }))
+    .sort((a, b) => (a.proveedor_id ?? 0) - (b.proveedor_id ?? 0) || a.nombre.localeCompare(b.nombre)
+      || String(a.talle).localeCompare(String(b.talle)));
 }
 
 /**

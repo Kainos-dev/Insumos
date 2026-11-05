@@ -91,6 +91,13 @@ function stockBadge(stock, minimo) {
   return `<span class="stock-state stock-state--${e.clase}">${e.label}</span>`;
 }
 
+// Estado ya calculado por el servidor ('faltante' | 'bajo' | 'ok')
+function estadoStockBadge(estado) {
+  const map = { faltante: ['falta', 'Faltante'], bajo: ['bajo', 'Stock bajo'], ok: ['ok', 'OK'] };
+  const [clase, label] = map[estado] || map.ok;
+  return `<span class="stock-state stock-state--${clase}">${label}</span>`;
+}
+
 // Etiquetas visibles de los movimientos y sus referencias
 const MOVIMIENTO_LABELS = {
   ingreso:        'Ingreso',

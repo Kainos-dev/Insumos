@@ -66,7 +66,8 @@ function renderInsumosTable(insumos) {
           <td>${escHtml(i.proveedor_nombre || '—')}</td>
           <td class="num">${i.stock_minimo}</td>
           <td class="num"><span class="${sc} bold">${i.stock_total}</span></td>
-          <td>${stockBadge(i.stock_total, i.stock_minimo)}</td>
+          <td>${estadoStockBadge(i.estado_stock)}
+            ${i.sin_talles_habilitados ? '<span class="badge badge-gray" title="Sin talles habilitados: no genera alertas de stock bajo. Configurarlos desde Editar.">Sin talles</span>' : ''}</td>
           <td>
             <div class="flex-gap">
               <button class="btn btn-sm" onclick="modalEditarInsumo(${i.id})">Editar</button>

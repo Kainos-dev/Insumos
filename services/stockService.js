@@ -291,43 +291,80 @@ function consumirStockOrden(orden_id, detalles) {
   });
 }
 
+// ------------------------------------------------------------------
+// ALERTAS DE INVENTARIO — reglas únicas para toda la aplicación
+//   · faltante:   stock < 0 en CUALQUIER fila (aunque el talle no esté
+//                 habilitado: un negativo nunca se oculta).
+//   · stock_bajo: 0 <= stock <= stock_minimo, solo en talles habilitados
+//                 o en stock general (cierres / hebillas).
+//   · Se usa la fila vigente de stock general: los duplicados históricos
+//     no generan alertas repetidas.
+// ------------------------------------------------------------------
+
+/** Clasifica una fila de stock: 'faltante' | 'stock_bajo' | null. */
+function clasificarFila(stock, minimo, habilitado) {
+  if (stock < 0) return 'faltante';
+  if (habilitado && stock <= minimo) return 'stock_bajo';
+  return null;
+}
+
 /**
- * Insumos con stock bajo (stock <= stock_minimo) o faltantes (stock < 0).
+ * Estado resumido de un insumo: 'faltante' | 'bajo' | 'ok'.
+ * filas: filas de stock vigentes; tallesHabilitados: lista de talles.
  */
+function estadoStock(insumo, filas, tallesHabilitados) {
+  const habilitados = new Set((tallesHabilitados || []).map(String));
+  let estado = 'ok';
+  for (const f of filas) {
+    const habilitado = f.talle === null || habilitados.has(String(f.talle));
+    const c = clasificarFila(f.stock, insumo.stock_minimo, habilitado);
+    if (c === 'faltante') return 'faltante';
+    if (c === 'stock_bajo') estado = 'bajo';
+  }
+  return estado;
+}
+
+/** Alertas de inventario (faltantes y stock bajo), sin duplicados. */
 function getAlertasStock() {
-  const db = getDb();
-  const rows = db.prepare(`
-    SELECT
-      i.id,
-      i.nombre,
-      i.tipo,
-      i.stock_minimo,
-      i.proveedor_id,
-      s.talle,
-      COALESCE(s.stock,0) AS stock,
-      p.nombre AS proveedor_nombre
-    FROM insumos i
-    LEFT JOIN insumo_stock s
-      ON s.insumo_id = i.id
-    LEFT JOIN insumo_talles it
-      ON it.insumo_id = i.id
-      AND it.talle = s.talle
-    LEFT JOIN proveedores p
-      ON p.id = i.proveedor_id
-    WHERE
-      (
-        i.tipo IN ('plantilla','fondo')
-        AND it.talle IS NOT NULL
-        AND COALESCE(s.stock,0) <= i.stock_minimo
-      )
-      OR
-      (
-        i.tipo IN ('cierre','hebilla')
-        AND COALESCE(s.stock,0) <= i.stock_minimo
-      )
-    ORDER BY stock ASC
-  `).all();
-  return rows;
+  const rows = all(`
+    SELECT i.id, i.nombre, i.tipo, i.stock_minimo, i.proveedor_id,
+           p.nombre AS proveedor_nombre,
+           s.id AS stock_id, s.talle, s.stock,
+           CASE WHEN s.talle IS NULL THEN 1
+                WHEN EXISTS (SELECT 1 FROM insumo_talles t WHERE t.insumo_id = i.id AND t.talle = s.talle) THEN 1
+                ELSE 0 END AS talle_habilitado,
+           (SELECT COUNT(*) FROM insumo_stock d WHERE d.insumo_id = i.id AND d.talle IS NULL) AS filas_generales
+    FROM insumo_stock s
+    JOIN insumos i ON i.id = s.insumo_id
+    LEFT JOIN proveedores p ON p.id = i.proveedor_id
+    WHERE s.talle IS NOT NULL
+       OR s.id = (SELECT MIN(x.id) FROM insumo_stock x WHERE x.insumo_id = s.insumo_id AND x.talle IS NULL)
+  `);
+
+  const alertas = [];
+  for (const r of rows) {
+    const tipo_alerta = clasificarFila(r.stock, r.stock_minimo, r.talle_habilitado === 1);
+    if (!tipo_alerta) continue;
+    const { filas_generales, ...resto } = r;
+    alertas.push({
+      ...resto,
+      talle_habilitado: r.talle_habilitado === 1,
+      conciliacion_pendiente: r.talle === null && filas_generales > 1,
+      tipo_alerta,
+    });
+  }
+  return alertas.sort((a, b) =>
+    (a.tipo_alerta === b.tipo_alerta ? 0 : a.tipo_alerta === 'faltante' ? -1 : 1) ||
+    a.stock - b.stock || a.nombre.localeCompare(b.nombre) || String(a.talle).localeCompare(String(b.talle)));
+}
+
+/** Plantillas y fondos sin talles habilitados: no pueden generar alertas de stock bajo. */
+function insumosSinTallesHabilitados() {
+  return all(`
+    SELECT i.id, i.nombre, i.tipo FROM insumos i
+    WHERE i.tipo IN ('plantilla','fondo')
+      AND NOT EXISTS (SELECT 1 FROM insumo_talles t WHERE t.insumo_id = i.id)
+    ORDER BY i.nombre`);
 }
 
 module.exports = {
@@ -345,4 +382,7 @@ module.exports = {
   verificarStockOrden,
   consumirStockOrden,
   getAlertasStock,
+  clasificarFila,
+  estadoStock,
+  insumosSinTallesHabilitados,
 };

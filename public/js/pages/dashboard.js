@@ -12,7 +12,19 @@ async function renderDashboard() {
 
   const data = await API.dashboard();
   const { totales, stock_bajo, faltantes, ordenes_recientes, pedidos_pendientes } = data;
+  const avisos = data.avisos || { conciliacion: [], sin_talles: [] };
   _fabAlertas = { faltantes, stock_bajo };
+
+  const listaNombres = (items) => items.map(i => escHtml(i.nombre)).join(', ');
+  const avisosHtml = (avisos.conciliacion.length || avisos.sin_talles.length) ? `
+    <div class="notice notice--warn" role="status">
+      <span class="notice-icon" aria-hidden="true">▲</span>
+      <div>
+        <strong>Revisión pendiente</strong>
+        ${avisos.conciliacion.length ? `<p>${avisos.conciliacion.length} insumo(s) con stock duplicado de un error anterior; requieren conteo físico y conciliación: ${listaNombres(avisos.conciliacion)}.</p>` : ''}
+        ${avisos.sin_talles.length ? `<p>${avisos.sin_talles.length} plantilla(s)/fondo(s) sin talles habilitados: no generan alertas de stock bajo (los negativos sí se muestran): ${listaNombres(avisos.sin_talles)}.</p>` : ''}
+      </div>
+    </div>` : '';
 
   const kpi = (label, value, cls = '', hint = '') => `
     <div class="kpi">
@@ -31,6 +43,8 @@ async function renderDashboard() {
       ${kpi('Productos', totales.productos)}
       ${kpi('Proveedores', totales.proveedores)}
     </div>
+
+    ${avisosHtml}
 
     <div class="grid-main">
       <div class="card card--flush">
@@ -139,8 +153,10 @@ function fabMostrarAlertas(tipo) {
     <thead><tr><th>Insumo</th><th>Talle</th><th class="num">Stock</th><th class="num">Mínimo</th><th>Estado</th><th class="hide-sm">Proveedor</th></tr></thead>
     <tbody>${lista.map(a => `
       <tr>
-        <td>${escHtml(a.nombre)}</td>
-        <td class="text-muted">${a.talle ? escHtml(a.talle) : '—'}</td>
+        <td>${escHtml(a.nombre)}
+          ${a.conciliacion_pendiente ? '<span class="badge badge-gold" title="Stock duplicado pendiente de conciliación">Conciliar</span>' : ''}</td>
+        <td class="text-muted nowrap">${a.talle ? escHtml(a.talle) : '—'}
+          ${a.talle && !a.talle_habilitado ? '<span class="badge badge-gray" title="Este talle no está habilitado para el insumo">no habilitado</span>' : ''}</td>
         <td class="num ${a.stock < 0 ? 'text-red' : ''}">${a.stock}</td>
         <td class="num text-muted">${a.stock_minimo}</td>
         <td>${stockBadge(a.stock, a.stock_minimo)}</td>
