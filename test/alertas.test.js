@@ -52,6 +52,7 @@ test('el dashboard separa faltantes y stock bajo y reporta avisos de configuraci
   assert.equal(data.faltantes.length, 1);
   assert.equal(data.faltantes[0].talle, '35');
   assert.equal(data.stock_bajo.length, 0, 'sin talles habilitados no hay stock bajo');
+  assert.equal(data.sin_stock.length, 0, 'el talle 36 en cero no está habilitado: no alerta');
   assert.deepEqual(data.avisos.sin_talles.map(x => x.nombre), ['Fondo sin talles']);
   assert.deepEqual(data.avisos.conciliacion.map(x => [x.nombre, x.filas_duplicadas]), [['Hebilla dup', 1]]);
 });
@@ -64,7 +65,7 @@ test('el estado de cada insumo en la lista usa las mismas reglas', async () => {
   const lista = (await api('GET', '/api/insumos')).data;
   const estado = id => lista.find(i => i.id === id);
   assert.equal(estado(ok).estado_stock, 'ok');
-  assert.equal(estado(bajo).estado_stock, 'bajo');
+  assert.equal(estado(bajo).estado_stock, 'stock_bajo');
   assert.equal(estado(falta).estado_stock, 'faltante');
   assert.equal(estado(sinTalles).estado_stock, 'ok');
   assert.equal(estado(sinTalles).sin_talles_habilitados, true);

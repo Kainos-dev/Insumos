@@ -29,6 +29,7 @@
   /* Estados */
   --green: #3fb978;
   --gold:  #e0a83a;
+  --orange: #e87f3e;
   --red:   #ef5a50;
   --blue:  #5b9ee6;
 
@@ -356,6 +357,8 @@ td.nowrap { white-space: nowrap; }
 .badge-gold   { background: rgba(224,168,58,.1);  color: var(--gold);  border-color: rgba(224,168,58,.25); }
 .badge-blue   { background: rgba(91,158,230,.1);  color: var(--blue);  border-color: rgba(91,158,230,.25); }
 .badge-gray   { background: var(--bg3); color: var(--text2); border-color: var(--border2); }
+.badge-orange { background: rgba(232,127,62,.1); color: var(--orange); border-color: rgba(232,127,62,.3); }
+.text-orange  { color: var(--orange); }
 
 /* Estado de stock: color + forma + texto (no depende solo del color) */
 .stock-state {
@@ -372,6 +375,8 @@ td.nowrap { white-space: nowrap; }
 .stock-state--bajo::before  { width: 0; height: 0; border-left: 4px solid transparent; border-right: 4px solid transparent; border-bottom: 7px solid currentColor; }
 .stock-state--falta { color: var(--red); background: rgba(239,90,80,.08); border-color: rgba(239,90,80,.3); }
 .stock-state--falta::before { background: currentColor; border-radius: 1px; }
+.stock-state--sin   { color: var(--orange); background: rgba(232,127,62,.08); border-color: rgba(232,127,62,.3); }
+.stock-state--sin::before   { width: 5px; height: 5px; border: 1.5px solid currentColor; border-radius: 1px; }
 
 /* ===== FORMS ===== */
 .form-group { margin-bottom: 12px; }

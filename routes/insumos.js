@@ -17,7 +17,7 @@ function completarInsumo(row) {
   row.stock_rows = getStockRows(row.id);
   row.stock_total = row.stock_rows.reduce((s, r) => s + r.stock, 0);
   row.stock_duplicados = contarFilasDuplicadas(row.id);
-  row.estado_stock = estadoStock(row, row.stock_rows, row.talles);   // 'faltante' | 'bajo' | 'ok'
+  row.estado_stock = estadoStock(row, row.stock_rows, row.talles);   // 'faltante' | 'sin_stock' | 'stock_bajo' | 'ok'
   row.sin_talles_habilitados = usaTalle(row.tipo) && row.talles.length === 0;
   return row;
 }

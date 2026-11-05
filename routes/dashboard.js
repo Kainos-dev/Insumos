@@ -32,13 +32,15 @@ router.get('/', (req, res) => {
     ordenes_borrador: get("SELECT COUNT(*) AS n FROM ordenes_produccion WHERE estado='borrador'").n,
   };
 
+  const faltantes  = alertas.filter(a => a.tipo_alerta === 'faltante');
+  const sin_stock  = alertas.filter(a => a.tipo_alerta === 'sin_stock');
   const stock_bajo = alertas.filter(a => a.tipo_alerta === 'stock_bajo');
-  const faltantes = alertas.filter(a => a.tipo_alerta === 'faltante');
 
   res.json({
     totales,
-    stock_bajo,
     faltantes,
+    sin_stock,
+    stock_bajo,
     ordenes_recientes,
     pedidos_pendientes,
     // Situaciones de configuración o de datos que requieren revisión

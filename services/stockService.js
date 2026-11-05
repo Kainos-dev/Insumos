@@ -292,34 +292,50 @@ function consumirStockOrden(orden_id, detalles) {
 }
 
 // ------------------------------------------------------------------
-// ALERTAS DE INVENTARIO — reglas únicas para toda la aplicación
-//   · faltante:   stock < 0 en CUALQUIER fila (aunque el talle no esté
-//                 habilitado: un negativo nunca se oculta).
-//   · stock_bajo: 0 <= stock <= stock_minimo, solo en talles habilitados
-//                 o en stock general (cierres / hebillas).
+// CLASIFICACIÓN DE STOCK — regla única para toda la aplicación
+//   · faltante:   stock < 0
+//   · sin_stock:  stock = 0
+//   · stock_bajo: 0 < stock <= mínimo, solo cuando el mínimo es > 0
+//   · ok:         el resto
+//
+// ALERTAS DE INVENTARIO
+//   · Un faltante (negativo) se muestra SIEMPRE, aunque el talle no esté
+//     habilitado: un negativo nunca se oculta.
+//   · Sin stock y stock bajo solo cuentan en talles habilitados o en
+//     stock general (cierres / hebillas).
 //   · Se usa la fila vigente de stock general: los duplicados históricos
 //     no generan alertas repetidas.
 // ------------------------------------------------------------------
 
-/** Clasifica una fila de stock: 'faltante' | 'stock_bajo' | null. */
-function clasificarFila(stock, minimo, habilitado) {
+const PRIORIDAD_ESTADO = { faltante: 0, sin_stock: 1, stock_bajo: 2, ok: 3 };
+
+/** 'faltante' | 'sin_stock' | 'stock_bajo' | 'ok' */
+function clasificarStock(stock, minimo) {
   if (stock < 0) return 'faltante';
-  if (habilitado && stock <= minimo) return 'stock_bajo';
-  return null;
+  if (stock === 0) return 'sin_stock';
+  if (minimo > 0 && stock <= minimo) return 'stock_bajo';
+  return 'ok';
+}
+
+/** Alerta para una fila: 'faltante' | 'sin_stock' | 'stock_bajo' | null. */
+function clasificarFila(stock, minimo, habilitado) {
+  const c = clasificarStock(stock, minimo);
+  if (c === 'faltante') return c;
+  if (!habilitado || c === 'ok') return null;
+  return c;
 }
 
 /**
- * Estado resumido de un insumo: 'faltante' | 'bajo' | 'ok'.
- * filas: filas de stock vigentes; tallesHabilitados: lista de talles.
+ * Estado resumido de un insumo (el peor de sus filas relevantes):
+ * 'faltante' | 'sin_stock' | 'stock_bajo' | 'ok'.
  */
 function estadoStock(insumo, filas, tallesHabilitados) {
   const habilitados = new Set((tallesHabilitados || []).map(String));
   let estado = 'ok';
   for (const f of filas) {
     const habilitado = f.talle === null || habilitados.has(String(f.talle));
-    const c = clasificarFila(f.stock, insumo.stock_minimo, habilitado);
-    if (c === 'faltante') return 'faltante';
-    if (c === 'stock_bajo') estado = 'bajo';
+    const c = clasificarFila(f.stock, insumo.stock_minimo, habilitado) || 'ok';
+    if (PRIORIDAD_ESTADO[c] < PRIORIDAD_ESTADO[estado]) estado = c;
   }
   return estado;
 }
@@ -354,7 +370,7 @@ function getAlertasStock() {
     });
   }
   return alertas.sort((a, b) =>
-    (a.tipo_alerta === b.tipo_alerta ? 0 : a.tipo_alerta === 'faltante' ? -1 : 1) ||
+    PRIORIDAD_ESTADO[a.tipo_alerta] - PRIORIDAD_ESTADO[b.tipo_alerta] ||
     a.stock - b.stock || a.nombre.localeCompare(b.nombre) || String(a.talle).localeCompare(String(b.talle)));
 }
 
@@ -382,6 +398,7 @@ module.exports = {
   verificarStockOrden,
   consumirStockOrden,
   getAlertasStock,
+  clasificarStock,
   clasificarFila,
   estadoStock,
   insumosSinTallesHabilitados,
