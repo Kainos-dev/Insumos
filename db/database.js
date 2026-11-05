@@ -13,9 +13,15 @@ if (fs.existsSync(ENV_FILE) && typeof process.loadEnvFile === 'function') {
 }
 
 // Ruta de la base SQLite. Si DB_PATH no está definida, se usa la ubicación histórica.
+const DEFAULT_DB_PATH = path.join(__dirname, '..', 'calzado.db');
 const DB_PATH = process.env.DB_PATH
   ? path.resolve(process.env.DB_PATH)
-  : path.join(__dirname, '..', 'calzado.db');
+  : DEFAULT_DB_PATH;
+
+// Marca grabada en la cabecera (PRAGMA application_id) de las bases de PRUEBA.
+// Las operaciones destructivas (seed, reseteo de pruebas) solo aceptan bases
+// con esta marca. La base de trabajo real no la tiene (application_id = 0).
+const TEST_DB_MARKER = 0x44435954; // "DCYT"
 
 let _db = null;
 
@@ -161,4 +167,12 @@ function transaction(fn) {
   return getDb().transaction(fn)();
 }
 
-module.exports = { getDb, run, get, all, transaction };
+function esBaseDePruebas(db) {
+  return db.pragma('application_id', { simple: true }) === TEST_DB_MARKER;
+}
+
+module.exports = {
+  getDb, run, get, all, transaction,
+  initSchema, esBaseDePruebas,
+  DB_PATH, DEFAULT_DB_PATH, TEST_DB_MARKER,
+};
