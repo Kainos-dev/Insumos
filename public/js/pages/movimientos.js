@@ -57,7 +57,7 @@ function renderMovsTable(movs) {
           <td>${escHtml(m.talle) || '—'}</td>
           <td><span class="badge ${tipoBadgeMap[m.tipo] || 'badge-gray'}">${escHtml(MOVIMIENTO_LABELS[m.tipo] || m.tipo)}</span></td>
           <td class="num ${esPos ? 'text-green' : 'text-red'} bold">${esPos ? '+' : ''}${m.cantidad}</td>
-          <td class="text-muted">${m.referencia_tipo ? `${escHtml(REFERENCIA_LABELS[m.referencia_tipo] || m.referencia_tipo)} #${m.referencia_id}` : '—'}</td>
+          <td class="text-muted">${m.referencia_tipo ? `${escHtml(REFERENCIA_LABELS[m.referencia_tipo] || m.referencia_tipo)}${m.referencia_id != null ? ' #' + m.referencia_id : ''}` : '—'}</td>
         </tr>`;
       }).join('')}
     </tbody>

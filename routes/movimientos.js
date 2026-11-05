@@ -6,9 +6,15 @@ const { all } = require('../db/database');
 const { registrarMovimientoManual } = require('../services/stockService');
 
 router.get('/', (req, res) => {
-  const { insumo_id, limit = 50 } = req.query;
+  const { insumo_id } = req.query;
+  let limit = Number(req.query.limit ?? 50);
+  if (!Number.isInteger(limit) || limit < 1) limit = 50;
+  limit = Math.min(limit, 1000);
+
+  // m.tipo es el tipo de MOVIMIENTO. El tipo del insumo se expone como
+  // insumo_tipo (antes "i.tipo" pisaba a "m.tipo" en el resultado).
   let sql = `
-    SELECT m.*, i.nombre AS insumo_nombre, i.tipo
+    SELECT m.*, i.nombre AS insumo_nombre, i.tipo AS insumo_tipo
     FROM movimientos_stock m
     JOIN insumos i ON i.id=m.insumo_id
   `;
@@ -17,8 +23,8 @@ router.get('/', (req, res) => {
     sql += ' WHERE m.insumo_id=?';
     params.push(insumo_id);
   }
-  sql += ' ORDER BY m.created_at DESC LIMIT ?';
-  params.push(Number(limit));
+  sql += ' ORDER BY m.created_at DESC, m.id DESC LIMIT ?';
+  params.push(limit);
   res.json(all(sql, params));
 });
 
