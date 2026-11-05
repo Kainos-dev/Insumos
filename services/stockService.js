@@ -118,6 +118,40 @@ function adjustStock(insumo_id, talle, delta, tipo, referencia_tipo = null, refe
   });
 }
 
+const TIPOS_CON_TALLE = ['plantilla', 'fondo'];
+const TIPOS_MOVIMIENTO_MANUAL = ['ingreso', 'egreso', 'ajuste'];
+
+function usaTalle(tipoInsumo) {
+  return TIPOS_CON_TALLE.includes(tipoInsumo);
+}
+
+/**
+ * Único punto de entrada para movimientos manuales de inventario
+ * (ingreso, egreso o ajuste a un valor). Valida y siempre registra el movimiento.
+ * - ingreso / egreso: cantidad entera > 0.
+ * - ajuste: cantidad = valor final, entero >= 0 (permite fijar en 0).
+ * - Plantillas y fondos requieren talle; cierres y hebillas no llevan talle.
+ */
+function registrarMovimientoManual({ insumo_id, talle, cantidad, tipo, referencia_tipo = null, referencia_id = null }) {
+  if (!TIPOS_MOVIMIENTO_MANUAL.includes(tipo)) {
+    throw new AppError('Tipo de movimiento inválido (ingreso, egreso o ajuste)');
+  }
+  const n = typeof cantidad === 'string' && cantidad.trim() !== '' ? Number(cantidad) : cantidad;
+  if (!Number.isInteger(n)) throw new AppError('La cantidad debe ser un número entero');
+  if (tipo === 'ajuste' ? n < 0 : n <= 0) {
+    throw new AppError(tipo === 'ajuste' ? 'El valor del ajuste no puede ser negativo' : 'La cantidad debe ser mayor que cero');
+  }
+  const insumo = get('SELECT id, tipo FROM insumos WHERE id = ?', [insumo_id]);
+  if (!insumo) throw new AppError('Insumo no encontrado', 404);
+  const t = normalizarTalle(talle);
+  if (usaTalle(insumo.tipo) && t === null) throw new AppError('Este insumo lleva stock por talle: indicá el talle');
+  if (!usaTalle(insumo.tipo) && t !== null) throw new AppError('Este insumo no lleva talle');
+
+  const delta = tipo === 'egreso' ? -n : n;
+  adjustStock(insumo.id, t, delta, tipo, referencia_tipo, referencia_id);
+  return { insumo_id: insumo.id, talle: t, stock: getStock(insumo.id, t) };
+}
+
 /**
  * Verificar stock para una orden — agrupado por PRODUCTO con consumo acumulado.
  *
@@ -305,6 +339,9 @@ module.exports = {
   insumosConDuplicados,
   setStock,
   adjustStock,
+  usaTalle,
+  registrarMovimientoManual,
+  TIPOS_CON_TALLE,
   verificarStockOrden,
   consumirStockOrden,
   getAlertasStock,

@@ -171,7 +171,7 @@ async function renderQuickStock() {
       </div>
       <div style="flex:0 1 110px">
         <label class="form-label" for="qsCantidad">Cantidad</label>
-        <input class="form-input" type="number" id="qsCantidad" value="1" min="1" />
+        <input class="form-input" type="number" id="qsCantidad" value="1" min="0" step="1" />
       </div>
       <div style="flex:1 1 140px">
         <label class="form-label" for="qsTipo">Tipo</label>
@@ -204,7 +204,7 @@ async function doQuickStock() {
   const talleWrap = document.getElementById('qsTalleWrap');
   const talle = talleWrap.style.display !== 'none' ? talleEl.value : null;
 
-  if (!insumo_id || !cantidad) { toast('Completar todos los campos', 'error'); return; }
+  if (!insumo_id || Number.isNaN(cantidad)) { toast('Completar todos los campos', 'error'); return; }
 
   try {
     await API.movimientos.rapido({ insumo_id: Number(insumo_id), talle, cantidad, tipo });

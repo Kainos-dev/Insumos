@@ -134,16 +134,18 @@ function buildInsumoForm(ins = null) {
       </div>
       ` : ''}
     <div id="stockSection">
-      ${conTalles ? renderStockTallesSection(ins?.stock_rows || []) : renderStockGeneralSection(ins?.stock_rows || [])}
+      ${ins ? renderStockSoloLectura(ins) : (conTalles ? renderStockTallesSection([]) : renderStockGeneralSection([]))}
     </div>
   `;
 }
 
+// Alta: stock inicial (se registra como ajuste en Movimientos)
 function renderStockTallesSection(stockRows) {
   return `
     <div class="form-group">
-      <label class="form-label">Stock por Talle</label>
+      <label class="form-label">Stock inicial por talle</label>
       ${buildStockTallesForm(stockRows)}
+      <div class="form-hint">Se registra como ajuste en Movimientos.</div>
     </div>
   `;
 }
@@ -152,15 +154,38 @@ function renderStockGeneralSection(stockRows) {
   const stock = stockRows[0]?.stock ?? 0;
   return `
     <div class="form-group">
-      <label class="form-label">Stock General</label>
-      <input class="form-input" type="number" id="fStockGeneral" value="${stock}" style="max-width:150px" />
+      <label class="form-label" for="fStockGeneral">Stock inicial</label>
+      <input class="form-input" type="number" id="fStockGeneral" value="${stock}" min="0" style="max-width:150px" />
+      <div class="form-hint">Se registra como ajuste en Movimientos.</div>
+    </div>
+  `;
+}
+
+// Edición: las existencias se muestran solo para consulta
+function renderStockSoloLectura(ins) {
+  const conTalles = ins.tipo === 'plantilla' || ins.tipo === 'fondo';
+  const filas = ins.stock_rows || [];
+  const celdas = conTalles
+    ? `<div class="stock-talles-grid">${filas.map(r => `
+        <div class="stock-talle-cell">
+          <label>${escHtml(r.talle)}</label>
+          <div class="stock-readonly ${r.stock < 0 ? 'stock-neg' : ''}">${r.stock}</div>
+        </div>`).join('') || '<span class="text-muted">Sin stock registrado</span>'}</div>`
+    : `<div class="stock-readonly ${(filas[0]?.stock ?? 0) < 0 ? 'stock-neg' : ''}" style="max-width:150px">${filas[0]?.stock ?? 0}</div>`;
+  return `
+    <div class="form-group">
+      <label class="form-label">Existencias actuales</label>
+      ${celdas}
+      <div class="form-hint">Las existencias no se modifican al editar. Para cambiarlas usá
+        <strong>Movimiento rápido de stock</strong> en Fábrica (ingreso, egreso o ajuste); así queda registrado en Movimientos.</div>
+      ${ins.stock_duplicados ? `<div class="form-hint text-gold">Conciliación pendiente: hay ${ins.stock_duplicados} registros duplicados de un error anterior.</div>` : ''}
     </div>
   `;
 }
 
 function onInsumoTipoChange(tipo, editing) {
   const section = document.getElementById('stockSection');
-  if (!section) return;
+  if (!section || editing) return; // al editar, las existencias se muestran sin cambios
   const conTalles = tipo === 'plantilla' || tipo === 'fondo';
   section.innerHTML = conTalles ? renderStockTallesSection([]) : renderStockGeneralSection([]);
 }
@@ -204,14 +229,6 @@ async function guardarInsumo(id) {
 
   const conTalles = tipo === 'plantilla' || tipo === 'fondo';
 
-  let stock_rows;
-  if (conTalles) {
-    stock_rows = readStockTallesForm(document.getElementById('modalBody'));
-  } else {
-    const v = parseInt(document.getElementById('fStockGeneral').value) || 0;
-    stock_rows = [{ talle: null, stock: v }];
-  }
-
   const talles = conTalles
     ? [...document.querySelectorAll('#insumoTallesSelector input:checked')].map(c => c.value)
     : [];
@@ -223,8 +240,14 @@ async function guardarInsumo(id) {
     stock_minimo,
     proveedor_id: proveedor_id ? Number(proveedor_id) : null,
     talles,
-    stock_rows
   };
+
+  // Solo en el alta se envía stock inicial; la edición nunca toca existencias.
+  if (!id) {
+    data.stock_rows = conTalles
+      ? readStockTallesForm(document.getElementById('modalBody'))
+      : [{ talle: null, stock: parseInt(document.getElementById('fStockGeneral').value) || 0 }];
+  }
 
   try {
     if (id) await API.insumos.update(id, data);
