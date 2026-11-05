@@ -46,6 +46,7 @@ async function renderPedidos(subId) {
       '<tr>' +
         '<td class="text-muted">#' + p.id + '</td>' +
         '<td><strong>' + escHtml(p.proveedor_nombre) + '</strong></td>' +
+        '<td>' + (p.responsable_slug ? responsableChip({ slug: p.responsable_slug, nombre: p.responsable_nombre }) : '<span class="text-muted">—</span>') + '</td>' +
         '<td>' + estadoBadge(p.estado) + '</td>' +
         '<td>' + (p.total_unidades || 0) + '</td>' +
         '<td class="text-muted">' + formatDate(p.created_at) + '</td>' +
@@ -58,7 +59,7 @@ async function renderPedidos(subId) {
 
   document.getElementById('pageBody').innerHTML =
     '<div class="card"><div class="table-wrap"><table>' +
-    '<thead><tr><th>#</th><th>Proveedor</th><th>Estado</th>' +
+    '<thead><tr><th>#</th><th>Proveedor</th><th>Responsable</th><th>Estado</th>' +
     '<th>Unidades</th><th>Fecha</th><th>Acciones</th></tr></thead>' +
     '<tbody>' + rows + '</tbody>' +
     '</table></div></div>';
@@ -109,6 +110,9 @@ async function renderPedidoDetalle(id) {
         'Pedido #' + pedido.id + ' — ' + escHtml(pedido.proveedor_nombre) +
       '</h2>' +
       estadoBadge(pedido.estado) +
+      '<span class="text-muted text-small">Responsable: ' +
+        (pedido.responsable_slug ? responsableChip({ slug: pedido.responsable_slug, nombre: pedido.responsable_nombre }) : 'sin asignar') +
+      '</span>' +
     '</div>' +
 
     '<div class="two-col">' +
@@ -236,26 +240,46 @@ async function cambiarEstadoPedido(id, estado) {
 // Inicia VACÍO. El usuario elige proveedor y agrega insumos manualmente.
 // Stock actual siempre visible en cada línea.
 
+let _pedResponsables = null;   // null: gestión de responsables no habilitada
+
 async function modalGenerarPedido() {
-  const [allInsumos, allProveedores] = await Promise.all([
+  const [allInsumos, allProveedores, estResp] = await Promise.all([
     API.insumos.list(),
     API.proveedores.list(),
+    API.responsables.estado(),
   ]);
 
   _pedAllInsumos  = allInsumos;
   _pedProveedores = allProveedores;
+  _pedResponsables = estResp.disponible ? (await API.responsables.list()).responsables.filter(r => r.activo) : null;
 
   const provOpts = allProveedores.map(p =>
     '<option value="' + p.id + '">' + escHtml(p.nombre) + '</option>'
   ).join('');
 
+  // Un pedido corresponde a un solo responsable: se elige primero y solo se
+  // ofrecen sus insumos. El servidor vuelve a validarlo.
+  const respHtml = _pedResponsables
+    ? '<div class="form-group">' +
+        '<label class="form-label" for="pedResponsableSel">Responsable *</label>' +
+        '<select class="form-select" id="pedResponsableSel" onchange="onPedProveedorChange()">' +
+          _pedResponsables.map(r => '<option value="' + r.id + '">' + escHtml(r.nombre) + '</option>').join('') +
+          '<option value="">Sin responsable asignado</option>' +
+        '</select>' +
+        '<div class="form-hint">Todos los insumos de un pedido deben pertenecer al mismo responsable.</div>' +
+      '</div>'
+    : '';
+
   const html =
+    '<div class="form-row">' +
+    respHtml +
     '<div class="form-group">' +
-      '<label class="form-label">Proveedor *</label>' +
+      '<label class="form-label" for="pedProveedorSel">Proveedor *</label>' +
       '<select class="form-select" id="pedProveedorSel" onchange="onPedProveedorChange()">' +
         '<option value="">— Seleccionar proveedor —</option>' +
         provOpts +
       '</select>' +
+    '</div>' +
     '</div>' +
     '<div id="pedLineas" style="margin-top:4px"></div>' +
     '<div style="margin-top:10px">' +
@@ -289,8 +313,21 @@ function onPedProveedorChange() {
  * Construye una fila de insumo para el pedido.
  * Muestra el stock actual al lado del selector, siempre visible.
  */
+/** Responsable elegido: undefined si no hay gestión de responsables, null si "sin responsable". */
+function pedResponsableElegido() {
+  if (!_pedResponsables) return undefined;
+  const v = document.getElementById('pedResponsableSel')?.value;
+  return v ? Number(v) : null;
+}
+
 function buildPedLinea(idx, provId) {
-  const insumosDeEste = _pedAllInsumos.filter(i => i.proveedor_id === provId);
+  const resp = pedResponsableElegido();
+  const insumosDeEste = _pedAllInsumos.filter(i => i.proveedor_id === provId &&
+    (resp === undefined || (resp === null ? !i.responsable : i.responsable && i.responsable.id === resp)));
+  if (!insumosDeEste.length) {
+    return '<div class="ped-linea text-muted text-small" style="padding:8px 0">' +
+      'Este proveedor no tiene insumos ' + (resp === undefined ? '' : resp === null ? 'sin responsable' : 'asignados a ese responsable') + '.</div>';
+  }
 
   const opts = insumosDeEste.map(i =>
     '<option value="' + i.id + '" data-tipo="' + i.tipo + '">' +
@@ -475,7 +512,10 @@ async function crearPedido() {
   }
 
   try {
-    const { id } = await API.pedidos.create({ proveedor_id, lineas });
+    const body = { proveedor_id, lineas };
+    const resp = pedResponsableElegido();
+    if (resp !== undefined) body.responsable_id = resp;   // el servidor valida que coincida
+    const { id } = await API.pedidos.create(body);
     toast('Pedido generado', 'success');
     Modal.close();
     renderPedidoDetalle(id);

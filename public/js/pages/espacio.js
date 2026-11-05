@@ -1,97 +1,116 @@
 // ============================================================
-// pages/espacio.js — Espacio individual de un responsable
+// pages/espacio.js — Espacio de trabajo de un responsable
 //
-// Todavía no existen asignaciones de insumos, por lo que el panel
-// muestra estados vacíos reales. La "Vista de demostración" usa datos
-// ficticios rotulados como tales y NO consulta ni modifica la base.
+// Muestra solo los insumos asignados al responsable, sus alertas y sus
+// pedidos, con datos reales de la base. Es una vista de trabajo: no es un
+// control de acceso (todavía no hay usuarios ni permisos).
 // ============================================================
 
-// Datos ficticios solo para ilustrar el diseño. No representan stock real.
-const DEMO_INSUMOS = [
-  { nombre: 'Insumo de ejemplo A', tipo: 'plantilla', talle: '38', stock: -4, minimo: 10 },
-  { nombre: 'Insumo de ejemplo B', tipo: 'cierre',    talle: null, stock: 6,  minimo: 20 },
-  { nombre: 'Insumo de ejemplo C', tipo: 'fondo',     talle: '41', stock: 35, minimo: 15 },
-];
-
 async function renderEspacio(slug) {
-  const esp = getEspacio(slug);
-  if (!esp) {
-    setPageTitle('Espacio no encontrado');
-    setTopbarActions('');
-    document.getElementById('pageBody').innerHTML =
-      `<div class="card">${emptyState('Este espacio de trabajo no existe.')}</div>`;
+  const conf = getEspacio(slug) || {};
+  setPageTitle(conf.nombre || 'Espacio');
+  setTopbarActions('');
+  loading();
+
+  const est = await API.responsables.estado();
+  if (!est.disponible) {
+    document.getElementById('pageBody').innerHTML = avisoMigracionPendiente(
+      'Cuando se aplique, este espacio mostrará los insumos asignados y sus pedidos.');
     return;
   }
 
-  setPageTitle(esp.nombre);
-  setTopbarActions('');
+  let data;
+  try {
+    data = await API.responsables.panel(slug);
+  } catch (e) {
+    setPageTitle('Espacio no encontrado');
+    document.getElementById('pageBody').innerHTML = `<div class="card">${emptyState(escHtml(e.message))}</div>`;
+    return;
+  }
 
-  const kpi = (label, value, hint = '') => `
-    <div class="kpi">
-      <div class="kpi-label">${label}</div>
-      <div class="kpi-value">${value}</div>
-      ${hint ? `<div class="kpi-hint">${hint}</div>` : ''}
-    </div>`;
+  const { responsable: r, insumos, alertas, pedidos, resumen } = data;
+  setPageTitle(r.nombre);
+  setTopbarActions(`<button class="btn btn-sm btn-ghost" onclick="renderEspacio('${escHtml(r.slug)}')">↻ Actualizar</button>`);
 
-  const demoRows = DEMO_INSUMOS.map(d => `
-    <tr>
-      <td><span class="demo-name">${d.nombre}</span></td>
-      <td>${tipoBadge(d.tipo)}</td>
-      <td class="text-muted">${d.talle || '—'}</td>
-      <td class="num">${d.stock}</td>
-      <td class="num text-muted">${d.minimo}</td>
-      <td>${stockBadge(d.stock, d.minimo)}</td>
-    </tr>`).join('');
+  const kpi = (label, value, cls = '') => `
+    <div class="kpi"><div class="kpi-label">${label}</div><div class="kpi-value ${value ? cls : ''}">${value}</div></div>`;
+
+  const alertasHtml = alertas.length === 0
+    ? emptyState(insumos.length ? 'Nada para reponer: sus insumos no tienen faltantes, sin stock ni stock bajo.' : 'Sin insumos asignados.')
+    : `<div class="table-wrap table-scroll"><table>
+        <thead><tr><th>Insumo</th><th>Talle</th><th class="num">Stock</th><th class="num">Mínimo</th><th>Estado</th></tr></thead>
+        <tbody>${alertas.map(a => `
+          <tr>
+            <td>${escHtml(a.nombre)}${a.conciliacion_pendiente ? ' <span class="badge badge-gold">Conciliar</span>' : ''}</td>
+            <td class="text-muted nowrap">${a.talle ? escHtml(a.talle) : '—'}${a.talle && !a.talle_habilitado ? ' <span class="badge badge-gray">no habilitado</span>' : ''}</td>
+            <td class="num ${a.stock < 0 ? 'text-red' : ''}">${a.stock}</td>
+            <td class="num text-muted">${a.stock_minimo}</td>
+            <td>${estadoStockBadge(a.tipo_alerta)}</td>
+          </tr>`).join('')}
+        </tbody></table></div>`;
+
+  const pedidosHtml = pedidos.length === 0
+    ? emptyState('Todavía no hay pedidos de ' + escHtml(r.nombre) + '.')
+    : `<div class="table-wrap table-scroll"><table>
+        <thead><tr><th>N.º</th><th>Proveedor</th><th>Estado</th><th class="num">Unid.</th><th>Fecha</th></tr></thead>
+        <tbody>${pedidos.map(p => `
+          <tr style="cursor:pointer" onclick="router.go('pedidos','${p.id}')">
+            <td class="text-muted">#${p.id}</td>
+            <td>${escHtml(p.proveedor_nombre)}</td>
+            <td>${estadoBadge(p.estado)}</td>
+            <td class="num">${p.total_unidades || 0}</td>
+            <td class="text-muted nowrap">${formatDate(p.created_at)}</td>
+          </tr>`).join('')}
+        </tbody></table></div>`;
+
+  const insumosHtml = insumos.length === 0
+    ? `<div style="padding:4px var(--pad) var(--pad)">${emptyState('Todavía no hay insumos asignados a ' + escHtml(r.nombre) + '.')}
+        <div class="text-center"><button class="btn btn-sm" onclick="router.go('fabrica','asignaciones')">Asignar desde Fábrica</button></div></div>`
+    : `<div class="table-wrap"><table>
+        <thead><tr><th>Insumo</th><th>Tipo</th><th class="hide-sm">Proveedor</th><th class="num">Stock total</th><th class="num">Mínimo</th><th>Estado</th></tr></thead>
+        <tbody>${insumos.map(i => `
+          <tr>
+            <td><strong>${escHtml(i.nombre)}</strong>
+              ${i.stock_duplicados ? ' <span class="badge badge-gold" title="Stock duplicado pendiente de conciliación">Conciliación pendiente</span>' : ''}
+              ${i.sin_talles_habilitados ? ' <span class="badge badge-gray" title="Sin talles habilitados">Sin talles</span>' : ''}</td>
+            <td>${tipoBadge(i.tipo)}</td>
+            <td class="text-muted hide-sm">${escHtml(i.proveedor_nombre || '—')}</td>
+            <td class="num ${stockColor(i.stock_total, i.stock_minimo)}">${i.stock_total}</td>
+            <td class="num text-muted">${i.stock_minimo}</td>
+            <td>${estadoStockBadge(i.estado_stock)}</td>
+          </tr>`).join('')}
+        </tbody></table></div>`;
 
   document.getElementById('pageBody').innerHTML = `
     <div class="identity">
-      <span class="nav-avatar" style="--avatar:${esp.color}" aria-hidden="true">${esp.inicial}</span>
+      <span class="nav-avatar" style="--avatar:${conf.color || 'var(--text3)'}" aria-hidden="true">${escHtml(conf.inicial || r.nombre[0])}</span>
       Responsable de reposición
-    </div>
-
-    <div class="notice" role="status">
-      <span class="notice-icon" aria-hidden="true">ℹ</span>
-      <div>
-        <strong>Todavía no hay insumos asignados a ${escHtml(esp.nombre)}.</strong>
-        <p>Cuando se habilite la asignación de responsables, este espacio mostrará sus insumos, faltantes y pedidos reales.</p>
-      </div>
+      <span class="text-muted" style="font-size:var(--fs-xs)">· vista de trabajo, no es un control de acceso</span>
     </div>
 
     <div class="kpi-strip">
-      ${kpi('Faltantes', '—', 'sin asignaciones')}
-      ${kpi('Stock bajo', '—', 'sin asignaciones')}
-      ${kpi('Pedidos pendientes', '—', 'sin asignaciones')}
-      ${kpi('Insumos asignados', 0)}
+      ${kpi('Faltantes', resumen.faltantes, 'text-red')}
+      ${kpi('Sin stock', resumen.sin_stock, 'text-orange')}
+      ${kpi('Stock bajo', resumen.stock_bajo, 'text-gold')}
+      ${kpi('Pedidos pendientes', resumen.pedidos_pendientes)}
+      ${kpi('Insumos asignados', resumen.insumos_asignados)}
     </div>
 
     <div class="grid-main">
       <div class="card card--flush">
-        <div class="card-head"><div class="card-title">Para reponer</div></div>
-        ${emptyState('Sin insumos asignados: no hay faltantes ni stock bajo para mostrar.')}
+        <div class="card-head"><div class="card-title">Para reponer</div><span class="tab-count">${alertas.length}</span></div>
+        ${alertasHtml}
       </div>
       <div class="card card--flush">
-        <div class="card-head"><div class="card-title">Mis pedidos</div></div>
-        ${emptyState('Los pedidos de ' + escHtml(esp.nombre) + ' aparecerán acá.')}
+        <div class="card-head"><div class="card-title">Mis pedidos</div>
+          <button class="btn btn-sm btn-ghost" onclick="router.go('pedidos')">Pedidos →</button></div>
+        ${pedidosHtml}
       </div>
     </div>
 
-    <div class="card card--flush demo-card" style="margin-top:var(--gap)" aria-label="Vista de demostración con datos ficticios">
-      <div class="card-head">
-        <div class="card-title">Mis insumos <span class="text-muted" style="font-weight:400">· vista previa del diseño</span></div>
-        <span class="demo-ribbon">◆ Demostración · datos ficticios</span>
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr>
-            <th>Insumo</th><th>Tipo</th><th>Talle</th>
-            <th class="num">Stock</th><th class="num">Mínimo</th><th>Estado</th>
-          </tr></thead>
-          <tbody>${demoRows}</tbody>
-        </table>
-      </div>
-      <div class="kpi-hint" style="padding:8px var(--pad);border-top:1px solid var(--border)">
-        Estos insumos y cantidades no existen en el sistema; solo ilustran cómo se verá el panel.
-      </div>
+    <div class="card card--flush" style="margin-top:var(--gap)">
+      <div class="card-head"><div class="card-title">Mis insumos</div><span class="tab-count">${insumos.length}</span></div>
+      ${insumosHtml}
     </div>
   `;
 }

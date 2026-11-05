@@ -1,8 +1,9 @@
 // ============================================================
 // config/espacios.js — Espacios de trabajo individuales
 //
-// Lista fija y provisoria (prototipo visual). Cuando exista la tabla
-// `responsables` (E4), esta lista se obtendrá desde la API.
+// Solo datos de PRESENTACIÓN (color e inicial) de cada espacio. Los
+// responsables, sus insumos y sus pedidos vienen de la base (tabla
+// `responsables`), nunca de esta lista.
 // No otorga permisos: hoy el acceso es abierto para todos.
 // ============================================================
 

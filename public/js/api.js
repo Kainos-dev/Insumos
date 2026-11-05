@@ -74,6 +74,16 @@ const API = {
     estado:       (id, estado) => API.put(`/api/pedidos/${id}/estado`, { estado }),
   },
 
+  // Responsables de reposición
+  responsables: {
+    estado:        ()                 => API.get('/api/responsables/estado'),
+    list:          ()                 => API.get('/api/responsables'),
+    panel:         (slug)             => API.get(`/api/responsables/${encodeURIComponent(slug)}/panel`),
+    asignar:       (insumoId, respId) => API.put(`/api/insumos/${insumoId}/responsable`, { responsable_id: respId }),
+    asignarVarios: (asignaciones)     => API.put('/api/responsables/asignaciones', { asignaciones }),
+    diagnostico:   ()                 => API.get('/api/responsables/diagnostico-pedidos'),
+  },
+
   // Movimientos
   movimientos: {
     list:   (params) => API.get('/api/movimientos?' + new URLSearchParams(params || {})),

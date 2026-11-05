@@ -10,25 +10,58 @@ const FAB_ALERTAS = [
 ];
 let _fabAlertas = { faltantes: [], sin_stock: [], stock_bajo: [] };
 
-async function renderDashboard() {
+async function renderDashboard(sub) {
+  if (sub === 'asignaciones') return renderAsignaciones();
   setPageTitle('Fábrica');
-  setTopbarActions(`<button class="btn btn-sm" onclick="renderDashboard()">↻ Actualizar</button>`);
+  setTopbarActions(`
+    <button class="btn btn-sm" onclick="router.go('fabrica','asignaciones')">Asignar responsables</button>
+    <button class="btn btn-sm btn-ghost" onclick="renderDashboard()">↻ Actualizar</button>`);
   loading();
 
   const data = await API.dashboard();
   const { totales, stock_bajo, faltantes, ordenes_recientes, pedidos_pendientes } = data;
   const sin_stock = data.sin_stock || [];
   const avisos = data.avisos || { conciliacion: [], sin_talles: [] };
+  const resp = data.responsables || { disponible: false };
+  const diag = resp.disponible ? await API.responsables.diagnostico().catch(() => null) : null;
   _fabAlertas = { faltantes, sin_stock, stock_bajo };
 
+  const pedidosIncompatibles = diag ? diag.mezcla.length + diag.desalineado.length : 0;
+  const respCard = !resp.disponible
+    ? `<div style="padding:12px var(--pad)">${avisoMigracionPendiente()}</div>`
+    : `<div class="resp-list">
+        ${resp.lista.map(r => {
+          const e = getEspacio(r.slug) || {};
+          const partes = [`${r.insumos_asignados} insumo${r.insumos_asignados === 1 ? '' : 's'}`];
+          if (r.faltantes) partes.push(`<span class="text-red">${r.faltantes} faltante${r.faltantes === 1 ? '' : 's'}</span>`);
+          if (r.sin_stock) partes.push(`<span class="text-orange">${r.sin_stock} sin stock</span>`);
+          if (r.stock_bajo) partes.push(`<span class="text-gold">${r.stock_bajo} bajo</span>`);
+          if (r.pedidos_pendientes) partes.push(`${r.pedidos_pendientes} pedido${r.pedidos_pendientes === 1 ? '' : 's'}`);
+          return `
+            <a class="resp-row" href="#espacio/${r.slug}">
+              <span class="nav-avatar" style="--avatar:${e.color || 'var(--text3)'}" aria-hidden="true">${escHtml(e.inicial || r.nombre[0])}</span>
+              <span><span class="resp-name">${escHtml(r.nombre)}</span>
+                <span class="resp-meta"> · ${partes.join(' · ')}</span></span>
+              <span class="resp-go" aria-hidden="true">→</span>
+            </a>`;
+        }).join('')}
+        <a class="resp-row" href="#fabrica/asignaciones">
+          <span class="nav-avatar" style="--avatar:var(--bg4);color:var(--text2)" aria-hidden="true">?</span>
+          <span><span class="resp-name">Sin asignar</span>
+            <span class="resp-meta"> · ${resp.sin_asignar.length} insumo${resp.sin_asignar.length === 1 ? '' : 's'}</span></span>
+          <span class="resp-go" aria-hidden="true">Asignar →</span>
+        </a>
+      </div>`;
+
   const listaNombres = (items) => items.map(i => escHtml(i.nombre)).join(', ');
-  const avisosHtml = (avisos.conciliacion.length || avisos.sin_talles.length) ? `
+  const avisosHtml = (avisos.conciliacion.length || avisos.sin_talles.length || pedidosIncompatibles) ? `
     <div class="notice notice--warn" role="status">
       <span class="notice-icon" aria-hidden="true">▲</span>
       <div>
         <strong>Revisión pendiente</strong>
         ${avisos.conciliacion.length ? `<p>${avisos.conciliacion.length} insumo(s) con stock duplicado de un error anterior; requieren conteo físico y conciliación: ${listaNombres(avisos.conciliacion)}.</p>` : ''}
         ${avisos.sin_talles.length ? `<p>${avisos.sin_talles.length} plantilla(s)/fondo(s) sin talles habilitados: no generan alertas de sin stock ni de stock bajo (los negativos sí se muestran): ${listaNombres(avisos.sin_talles)}.</p>` : ''}
+        ${pedidosIncompatibles ? `<p>${pedidosIncompatibles} pedido(s) con insumos de distintos responsables según las asignaciones actuales (no se modificaron): ${[...diag.mezcla, ...diag.desalineado].map(p => '#' + p.id).join(', ')}.</p>` : ''}
       </div>
     </div>` : '';
 
@@ -44,11 +77,10 @@ async function renderDashboard() {
       ${kpi('Faltantes', faltantes.length, faltantes.length ? 'text-red' : '', 'stock negativo')}
       ${kpi('Sin stock', sin_stock.length, sin_stock.length ? 'text-orange' : '', 'en cero')}
       ${kpi('Stock bajo', stock_bajo.length, stock_bajo.length ? 'text-gold' : '', 'hasta el mínimo')}
+      ${resp.disponible ? kpi('Sin responsable', resp.sin_asignar.length, resp.sin_asignar.length ? 'text-gold' : '', 'insumos') : ''}
       ${kpi('Planillas en borrador', totales.ordenes_borrador)}
       ${kpi('Pedidos pendientes', pedidos_pendientes.length)}
       ${kpi('Insumos', totales.insumos)}
-      ${kpi('Productos', totales.productos)}
-      ${kpi('Proveedores', totales.proveedores)}
     </div>
 
     ${avisosHtml}
@@ -69,19 +101,9 @@ async function renderDashboard() {
       <div class="card card--flush">
         <div class="card-head">
           <div class="card-title">Responsables de reposición</div>
-          <span class="badge badge-gray" title="La asignación todavía no está habilitada">${totales.insumos} sin asignar</span>
+          ${resp.disponible ? `<button class="btn btn-sm btn-ghost" onclick="router.go('fabrica','asignaciones')">Asignar →</button>` : ''}
         </div>
-        <div class="resp-list">
-          ${ESPACIOS.map(e => `
-            <a class="resp-row" href="#espacio/${e.slug}">
-              <span class="nav-avatar" style="--avatar:${e.color}" aria-hidden="true">${e.inicial}</span>
-              <span>
-                <span class="resp-name">${escHtml(e.nombre)}</span>
-                <span class="resp-meta"> · sin insumos asignados</span>
-              </span>
-              <span class="resp-go" aria-hidden="true">→</span>
-            </a>`).join('')}
-        </div>
+        ${respCard}
       </div>
     </div>
 
