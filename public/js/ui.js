@@ -51,6 +51,18 @@ function formatDateTime(d) {
   return new Date(d).toLocaleString('es-AR', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit' });
 }
 
+// Etiquetas visibles de los estados (los valores internos no cambian)
+const ESTADO_LABELS = {
+  borrador:   'Borrador',
+  confirmada: 'Confirmada',
+  cancelada:  'Cancelada',
+  enviado:    'Enviado',
+  recibido:   'Recibido',
+  cancelado:  'Cancelado',
+  faltante:   'Faltante',
+  stock_bajo: 'Stock bajo',
+};
+
 function estadoBadge(estado) {
   const map = {
     borrador:   'badge-gray',
@@ -58,11 +70,36 @@ function estadoBadge(estado) {
     cancelada:  'badge-red',
     enviado:    'badge-blue',
     recibido:   'badge-green',
+    cancelado:  'badge-red',
     faltante:   'badge-red',
     stock_bajo: 'badge-gold',
   };
-  return `<span class="badge ${map[estado] || 'badge-gray'}">${estado}</span>`;
+  const label = ESTADO_LABELS[estado] || estado;
+  return `<span class="badge ${map[estado] || 'badge-gray'}">${escHtml(label)}</span>`;
 }
+
+// Estado de stock con color, forma y texto.
+// Usa las mismas reglas que el servidor: < 0 faltante, <= mínimo bajo.
+function stockEstado(stock, minimo) {
+  if (stock < 0) return { clase: 'falta', label: 'Faltante' };
+  if (stock <= minimo) return { clase: 'bajo', label: 'Stock bajo' };
+  return { clase: 'ok', label: 'OK' };
+}
+
+function stockBadge(stock, minimo) {
+  const e = stockEstado(stock, minimo);
+  return `<span class="stock-state stock-state--${e.clase}">${e.label}</span>`;
+}
+
+// Etiquetas visibles de los movimientos y sus referencias
+const MOVIMIENTO_LABELS = {
+  ingreso:        'Ingreso',
+  egreso:         'Egreso',
+  ajuste:         'Ajuste',
+  consumo_orden:  'Consumo de planilla',
+  ingreso_pedido: 'Ingreso de pedido',
+};
+const REFERENCIA_LABELS = { orden: 'Planilla', pedido: 'Pedido' };
 
 function tipoBadge(tipo) {
   const map = {
@@ -88,21 +125,30 @@ function emptyState(msg = 'Sin datos') {
 }
 
 function escHtml(str) {
-  if (!str) return '';
-  return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
-// ===== TOPBAR ACTIONS =====
+// ===== TOPBAR =====
 function setTopbarActions(html) {
   document.getElementById('topbarActions').innerHTML = html;
 }
 function setPageTitle(t) {
   document.getElementById('pageTitle').textContent = t;
+  document.title = t + ' — Darc Cuir & Yatay';
+}
+function setBreadcrumb(t) {
+  document.getElementById('breadcrumb').textContent = t || '';
 }
 
-// ===== MENU TOGGLE =====
+// ===== MENU TOGGLE (celular / tablet) =====
 document.getElementById('menuToggle').addEventListener('click', () => {
-  document.getElementById('sidebar').classList.toggle('open');
+  const sb = document.getElementById('sidebar');
+  const open = !sb.classList.contains('open');
+  sb.classList.toggle('open', open);
+  document.getElementById('menuToggle').setAttribute('aria-expanded', String(open));
 });
 
 // ===== TALLE CONSTANTS =====

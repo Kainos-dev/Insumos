@@ -39,7 +39,7 @@ function renderMovsTable(movs) {
   if (!movs.length) return emptyState('Sin movimientos');
   return `<table>
     <thead><tr>
-      <th>Fecha</th><th>Insumo</th><th>Talle</th><th>Tipo</th><th>Cantidad</th><th>Referencia</th>
+      <th>Fecha</th><th>Insumo</th><th>Talle</th><th>Tipo</th><th class="num">Cantidad</th><th>Referencia</th>
     </tr></thead>
     <tbody>
       ${movs.map(m => {
@@ -54,10 +54,10 @@ function renderMovsTable(movs) {
         return `<tr>
           <td class="text-muted" style="white-space:nowrap">${formatDateTime(m.created_at)}</td>
           <td><strong>${escHtml(m.insumo_nombre)}</strong></td>
-          <td>${m.talle || '—'}</td>
-          <td><span class="badge ${tipoBadgeMap[m.tipo] || 'badge-gray'}">${m.tipo}</span></td>
-          <td class="${esPos ? 'text-green' : 'text-red'} bold">${esPos ? '+' : ''}${m.cantidad}</td>
-          <td class="text-muted">${m.referencia_tipo ? `${m.referencia_tipo} #${m.referencia_id}` : '—'}</td>
+          <td>${escHtml(m.talle) || '—'}</td>
+          <td><span class="badge ${tipoBadgeMap[m.tipo] || 'badge-gray'}">${escHtml(MOVIMIENTO_LABELS[m.tipo] || m.tipo)}</span></td>
+          <td class="num ${esPos ? 'text-green' : 'text-red'} bold">${esPos ? '+' : ''}${m.cantidad}</td>
+          <td class="text-muted">${m.referencia_tipo ? `${escHtml(REFERENCIA_LABELS[m.referencia_tipo] || m.referencia_tipo)} #${m.referencia_id}` : '—'}</td>
         </tr>`;
       }).join('')}
     </tbody>

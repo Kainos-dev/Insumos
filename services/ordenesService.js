@@ -53,7 +53,7 @@ function agregarDetallesBulk(orden_id, producto_id, lineas, numero_pedido = null
       );
 
       if (existe) {
-        throw new Error('Ese número de pedido ya existe en esta orden');
+        throw new Error('Ese número de pedido ya existe en esta planilla');
       }
     }
     const np = numero_pedido || proximoNumeroPedido(orden_id);
@@ -119,8 +119,8 @@ function verificar(orden_id) {
 
 function confirmarOrden(orden_id) {
   const orden = get('SELECT * FROM ordenes_produccion WHERE id=?', [orden_id]);
-  if (!orden) throw new Error('Orden no encontrada');
-  if (orden.estado !== 'borrador') throw new Error('Solo se pueden confirmar órdenes en borrador');
+  if (!orden) throw new Error('Planilla no encontrada');
+  if (orden.estado !== 'borrador') throw new Error('Solo se pueden confirmar planillas en borrador');
 
   const detalles = getDetalles(orden_id);
   transaction(() => {

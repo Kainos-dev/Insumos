@@ -19,7 +19,7 @@ function generarPDFOrden(orden_id, res) {
 
   const orden = db.prepare('SELECT * FROM ordenes_produccion WHERE id=?').get(orden_id);
   if (!orden) {
-    res.status(404).json({ error: 'Orden no encontrada' });
+    res.status(404).json({ error: 'Planilla no encontrada' });
     return;
   }
 
@@ -88,11 +88,11 @@ function generarPDFOrden(orden_id, res) {
     size: 'A4',
     layout: 'landscape',
     margin: 0,
-    info: { Title: `Orden de Producción #${orden_id}` },
+    info: { Title: `Planilla de Corte #${orden_id}` },
   });
 
   res.setHeader('Content-Type', 'application/pdf');
-  res.setHeader('Content-Disposition', `inline; filename="orden-${orden_id}.pdf"`);
+  res.setHeader('Content-Disposition', `inline; filename="planilla-${orden_id}.pdf"`);
   doc.pipe(res);
 
   const PW = doc.page.width;   // 841.89
@@ -140,7 +140,7 @@ function generarPDFOrden(orden_id, res) {
   function drawHeader(title, hoja) {
     doc.rect(0, 0, PW, HEADER_H).fill(C_DARKBG);
     doc.font(FONTB).fontSize(14).fillColor('white')
-      .text(`ORDEN #${orden_id} — ${title}`, ML, 10, { width: PW * 0.55 });
+      .text(`PLANILLA DE CORTE #${orden_id} — ${title}`, ML, 10, { width: PW * 0.62 });
     const sub = [
       orden.descripcion || 'Sin descripción',
       orden.created_at,
@@ -160,7 +160,7 @@ function generarPDFOrden(orden_id, res) {
       doc.rect(ML, y + 4, CW, 0.5).fill(C_GRID);
       doc.font(FONT).fontSize(7).fillColor(C_MUTED)
         .text(
-          `Líneas: ${filasPDF.length}  ·  Total pares: ${totalPares}  ·  Generado: ${genDate}  ·  Orden #${orden_id}`,
+          `Líneas: ${filasPDF.length}  ·  Total pares: ${totalPares}  ·  Generado: ${genDate}  ·  Planilla de Corte #${orden_id}`,
           ML, y + 7, { width: CW }
         );
     }
