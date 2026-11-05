@@ -3,55 +3,81 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Calzado — Sistema de Gestión</title>
+  <meta name="theme-color" content="#141518" />
+  <title>Darc Cuir & Yatay — Gestión de insumos</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/css/main.css" />
 </head>
 <body>
   <div id="app">
-    <aside class="sidebar" id="sidebar">
+    <aside class="sidebar" id="sidebar" aria-label="Menú principal">
       <div class="sidebar-brand">
-        <span class="brand-icon">🥾</span>
+        <span class="brand-icon" aria-hidden="true">DY</span>
         <div>
-          <div class="brand-name">GESTIÓN</div>
-          <div class="brand-sub">Darc Cuir & Yatay</div>
+          <div class="brand-name">Darc Cuir &amp; Yatay</div>
+          <div class="brand-sub">Gestión de insumos</div>
         </div>
       </div>
       <nav class="sidebar-nav">
-        <a href="#dashboard"    class="nav-item active" data-page="dashboard">
-          <span class="nav-icon">◈</span> Dashboard
-        </a>
-        <a href="#insumos"      class="nav-item" data-page="insumos">
-          <span class="nav-icon">◉</span> Insumos
-        </a>
-        <a href="#productos"    class="nav-item" data-page="productos">
-          <span class="nav-icon">◎</span> Productos
-        </a>
-        <a href="#ordenes"      class="nav-item" data-page="ordenes">
-          <span class="nav-icon">◐</span> Órdenes
-        </a>
-        <a href="#pedidos"      class="nav-item" data-page="pedidos">
-          <span class="nav-icon">◑</span> Pedidos
-        </a>
-        <a href="#proveedores"  class="nav-item" data-page="proveedores">
-          <span class="nav-icon">◒</span> Proveedores
-        </a>
-        <a href="#movimientos"  class="nav-item" data-page="movimientos">
-          <span class="nav-icon">◓</span> Movimientos
-        </a>
+        <div class="nav-group">
+          <div class="nav-group-title" id="navEspaciosTitle">Espacios de trabajo</div>
+          <div role="list" aria-labelledby="navEspaciosTitle" id="navEspacios">
+            <a href="#fabrica" class="nav-item active" data-page="fabrica" role="listitem">
+              <span class="nav-avatar nav-avatar--factory" aria-hidden="true">▦</span>
+              <span class="nav-label">Fábrica</span>
+            </a>
+            <!-- Rubén, Dani y Jorge se agregan desde js/config/espacios.js -->
+          </div>
+        </div>
+        <div class="nav-group">
+          <div class="nav-group-title" id="navGestionTitle">Gestión</div>
+          <div role="list" aria-labelledby="navGestionTitle">
+            <a href="#insumos" class="nav-item" data-page="insumos" role="listitem">
+              <span class="nav-icon" aria-hidden="true">◉</span><span class="nav-label">Insumos</span>
+            </a>
+            <a href="#proveedores" class="nav-item" data-page="proveedores" role="listitem">
+              <span class="nav-icon" aria-hidden="true">◒</span><span class="nav-label">Proveedores</span>
+            </a>
+            <a href="#productos" class="nav-item" data-page="productos" role="listitem">
+              <span class="nav-icon" aria-hidden="true">◎</span><span class="nav-label">Productos</span>
+            </a>
+            <a href="#planillas" class="nav-item" data-page="planillas" role="listitem">
+              <span class="nav-icon" aria-hidden="true">◐</span><span class="nav-label">Planillas de Corte</span>
+            </a>
+            <a href="#pedidos" class="nav-item" data-page="pedidos" role="listitem">
+              <span class="nav-icon" aria-hidden="true">◑</span><span class="nav-label">Pedidos</span>
+            </a>
+            <a href="#movimientos" class="nav-item" data-page="movimientos" role="listitem">
+              <span class="nav-icon" aria-hidden="true">◓</span><span class="nav-label">Movimientos</span>
+            </a>
+          </div>
+        </div>
       </nav>
-      <div class="sidebar-footer">v1.0.0</div>
+      <div class="sidebar-footer">
+        <strong>Acceso abierto</strong> · sin usuarios ni permisos todavía
+      </div>
     </aside>
+    <div class="sidebar-backdrop" id="sidebarBackdrop" aria-hidden="true"></div>
 
     <main class="main-content">
-      <header class="topbar">
-        <button class="menu-toggle" id="menuToggle">☰</button>
-        <h1 class="page-title" id="pageTitle">Dashboard</h1>
-        <div class="topbar-actions" id="topbarActions"></div>
+      <!-- Barra superior: solo en celular y tablet -->
+      <header class="mobilebar">
+        <button class="menu-toggle" id="menuToggle" aria-label="Abrir menú" aria-controls="sidebar" aria-expanded="false">☰</button>
+        <span class="mobilebar-brand">Darc Cuir &amp; Yatay</span>
       </header>
-      <div class="page-body" id="pageBody">
-        <!-- Pages rendered here -->
+      <div class="page-scroll" id="pageScroll">
+        <div class="page-head">
+          <div class="page-head-titles">
+            <div class="breadcrumb" id="breadcrumb">Espacios de trabajo</div>
+            <h1 class="page-title" id="pageTitle">Fábrica</h1>
+          </div>
+          <div class="topbar-actions" id="topbarActions"></div>
+        </div>
+        <div class="page-body" id="pageBody">
+          <!-- Las páginas se renderizan acá -->
+        </div>
       </div>
     </main>
   </div>
@@ -61,7 +87,7 @@
     <div class="modal" id="modal">
       <div class="modal-header">
         <h2 class="modal-title" id="modalTitle"></h2>
-        <button class="modal-close" id="modalClose">✕</button>
+        <button class="modal-close" id="modalClose" aria-label="Cerrar">✕</button>
       </div>
       <div class="modal-body" id="modalBody"></div>
     </div>
@@ -70,9 +96,11 @@
   <!-- Toast -->
   <div class="toast-container" id="toastContainer"></div>
 
+  <script src="/js/config/espacios.js"></script>
   <script src="/js/api.js"></script>
   <script src="/js/ui.js"></script>
   <script src="/js/pages/dashboard.js"></script>
+  <script src="/js/pages/espacio.js"></script>
   <script src="/js/pages/insumos.js"></script>
   <script src="/js/pages/productos.js"></script>
   <script src="/js/pages/ordenes.js"></script>
