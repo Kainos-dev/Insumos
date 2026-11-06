@@ -1,19 +1,15 @@
 'use strict';
 
-const { get, all, run, transaction, getDb } = require('../db/database');
+const { get, all, run, transaction } = require('../db/database');
 const { AppError } = require('../utils/errores');
 
 // ------------------------------------------------------------------
 // STOCK SIN TALLE (cierres, hebillas)
 //
-// SQLite trata cada NULL como distinto dentro de UNIQUE(insumo_id, talle),
-// por lo que el antiguo "INSERT ... ON CONFLICT" nunca detectaba la fila
-// existente con talle NULL e insertaba una nueva en cada movimiento.
-//
-// Ahora toda lectura y escritura usa UNA fila determinista: la de menor id
-// (la misma que el sistema ya leía). Las filas duplicadas históricas no se
-// modifican ni se borran: quedan para conciliación manual
-// (ver scripts/conciliacion-stock.js).
+// En PostgreSQL la restricción UNIQUE NULLS NOT DISTINCT (insumo_id, talle)
+// impide que existan dos filas de stock general para el mismo insumo.
+// Las filas duplicadas de la época SQLite se conciliaron al migrar.
+// Las lecturas siguen usando la fila de menor id por compatibilidad.
 // ------------------------------------------------------------------
 
 /** '' / undefined → null; números → texto ('38'). */
@@ -23,24 +19,28 @@ function normalizarTalle(talle) {
   return t === '' ? null : t;
 }
 
-/** Fila de stock vigente para insumo+talle (o undefined si no existe). */
-function getStockRow(insumo_id, talle = null) {
+/**
+ * Fila de stock vigente para insumo+talle (o undefined si no existe).
+ * bloquear = true la reserva hasta el fin de la transacción (FOR UPDATE).
+ */
+function getStockRow(insumo_id, talle = null, { bloquear = false } = {}) {
   const t = normalizarTalle(talle);
+  const lock = bloquear ? ' FOR UPDATE' : '';
   return t === null
-    ? get('SELECT * FROM insumo_stock WHERE insumo_id = ? AND talle IS NULL ORDER BY id LIMIT 1', [insumo_id])
-    : get('SELECT * FROM insumo_stock WHERE insumo_id = ? AND talle = ? ORDER BY id LIMIT 1', [insumo_id, t]);
+    ? get(`SELECT * FROM insumo_stock WHERE insumo_id = ? AND talle IS NULL ORDER BY id LIMIT 1${lock}`, [insumo_id])
+    : get(`SELECT * FROM insumo_stock WHERE insumo_id = ? AND talle = ? ORDER BY id LIMIT 1${lock}`, [insumo_id, t]);
 }
 
 /**
  * Stock de un insumo+talle. talle = null para cierres/hebillas.
  */
-function getStock(insumo_id, talle = null) {
-  const row = getStockRow(insumo_id, talle);
+async function getStock(insumo_id, talle = null) {
+  const row = await getStockRow(insumo_id, talle);
   return row ? row.stock : 0;
 }
 
 /**
- * Filas de stock vigentes de un insumo (sin las duplicadas históricas).
+ * Filas de stock vigentes de un insumo.
  */
 function getStockRows(insumo_id) {
   return all(`
@@ -51,9 +51,9 @@ function getStockRows(insumo_id) {
     ORDER BY s.talle`, [insumo_id]);
 }
 
-/** Cantidad de filas duplicadas históricas (talle NULL) pendientes de conciliar. */
-function contarFilasDuplicadas(insumo_id) {
-  const r = get('SELECT COUNT(*) AS n FROM insumo_stock WHERE insumo_id = ? AND talle IS NULL', [insumo_id]);
+/** Cantidad de filas duplicadas (talle NULL) pendientes de conciliar. */
+async function contarFilasDuplicadas(insumo_id) {
+  const r = await get('SELECT COUNT(*) AS n FROM insumo_stock WHERE insumo_id = ? AND talle IS NULL', [insumo_id]);
   return Math.max(0, (r ? r.n : 0) - 1);
 }
 
@@ -63,7 +63,7 @@ function insumosConDuplicados() {
     SELECT s.insumo_id, i.nombre, COUNT(*) - 1 AS filas_duplicadas
     FROM insumo_stock s JOIN insumos i ON i.id = s.insumo_id
     WHERE s.talle IS NULL
-    GROUP BY s.insumo_id HAVING COUNT(*) > 1
+    GROUP BY s.insumo_id, i.nombre HAVING COUNT(*) > 1
     ORDER BY i.nombre`);
 }
 
@@ -72,50 +72,102 @@ function insumosConDuplicados() {
  * no existe). Nunca crea una segunda fila. No registra movimiento: usar
  * adjustStock para cambios de inventario.
  */
-function setStock(insumo_id, talle, stock) {
+async function setStock(insumo_id, talle, stock) {
   if (!Number.isInteger(stock)) throw new AppError('El stock debe ser un número entero');
   const t = normalizarTalle(talle);
-  const row = getStockRow(insumo_id, t);
-  if (row) {
-    run('UPDATE insumo_stock SET stock = ? WHERE id = ?', [stock, row.id]);
-  } else {
-    run('INSERT INTO insumo_stock (insumo_id, talle, stock) VALUES (?, ?, ?)', [insumo_id, t, stock]);
-  }
+  await run(`
+    INSERT INTO insumo_stock (insumo_id, talle, stock) VALUES (?, ?, ?)
+    ON CONFLICT (insumo_id, talle) DO UPDATE SET stock = excluded.stock`, [insumo_id, t, stock]);
+}
+
+const claveStock = (insumo_id, talle) => `${insumo_id}|${talle ?? ''}`;
+
+/**
+ * Stock vigente de varios insumo+talle en una sola consulta.
+ * claves = [{ insumo_id, talle }] → Map claveStock → stock (0 si no hay fila).
+ */
+async function stockDeVarios(claves) {
+  const mapa = new Map(claves.map(c => [claveStock(c.insumo_id, normalizarTalle(c.talle)), 0]));
+  if (!claves.length) return mapa;
+  const filas = await all(`
+    SELECT DISTINCT ON (s.insumo_id, s.talle) s.insumo_id, s.talle, s.stock
+    FROM insumo_stock s
+    JOIN unnest(?::int[], ?::text[]) AS v(insumo_id, talle)
+      ON v.insumo_id = s.insumo_id AND v.talle IS NOT DISTINCT FROM s.talle
+    ORDER BY s.insumo_id, s.talle, s.id`,
+  [claves.map(c => c.insumo_id), claves.map(c => normalizarTalle(c.talle))]);
+  for (const f of filas) mapa.set(claveStock(f.insumo_id, f.talle), f.stock);
+  return mapa;
 }
 
 /**
- * Ajusta el stock y registra el movimiento. Permite stock negativo.
+ * Aplica varios ajustes de stock y registra un movimiento por cada uno, en
+ * una transacción y con pocas consultas (no una por ajuste).
+ * ajustes = [{ insumo_id, talle, delta, tipo, referencia_tipo, referencia_id }]
  * tipo 'ajuste': delta es el valor final; el movimiento guarda la diferencia.
+ * Permite stock negativo. Devuelve Map claveStock → stock final.
  */
-function adjustStock(insumo_id, talle, delta, tipo, referencia_tipo = null, referencia_id = null) {
-  if (!Number.isInteger(delta)) throw new AppError('La cantidad debe ser un número entero');
-  talle = normalizarTalle(talle);
-  transaction(() => {
-    const current = getStock(insumo_id, talle);
+async function ajustarVarios(ajustes) {
+  for (const a of ajustes) {
+    if (!Number.isInteger(a.delta)) throw new AppError('La cantidad debe ser un número entero');
+    a.talle = normalizarTalle(a.talle);
+  }
+  const finales = new Map();
+  if (!ajustes.length) return finales;
+  const insumos = ajustes.map(a => a.insumo_id);
+  const talles = ajustes.map(a => a.talle);
 
-    let newStock;
-    let movimientoCantidad;
+  await transaction(async () => {
+    // Crea las filas que falten y bloquea todas (en orden de id, para que dos
+    // operaciones simultáneas no se traben): los ajustes del mismo insumo+talle
+    // se aplican uno después del otro, sin pisarse.
+    await run(`
+      INSERT INTO insumo_stock (insumo_id, talle, stock)
+      SELECT DISTINCT v.insumo_id, v.talle, 0 FROM unnest(?::int[], ?::text[]) AS v(insumo_id, talle)
+      ON CONFLICT (insumo_id, talle) DO NOTHING`, [insumos, talles]);
+    const filas = await all(`
+      SELECT s.id, s.insumo_id, s.talle, s.stock FROM insumo_stock s
+      WHERE EXISTS (SELECT 1 FROM unnest(?::int[], ?::text[]) AS v(insumo_id, talle)
+                    WHERE v.insumo_id = s.insumo_id AND v.talle IS NOT DISTINCT FROM s.talle)
+      ORDER BY s.id
+      FOR UPDATE`, [insumos, talles]);
+    const porClave = new Map();
+    for (const f of filas) if (!porClave.has(claveStock(f.insumo_id, f.talle))) porClave.set(claveStock(f.insumo_id, f.talle), f);
 
-    if (tipo === 'ajuste') {
-      // ajuste = fijar stock exacto
-      newStock = delta;
-
-      // guardamos cuánto cambió realmente para historial
-      movimientoCantidad = delta - current;
-    } else {
-      // ingreso / egreso / consumo_orden
-      newStock = current + delta;
-      movimientoCantidad = delta;
+    const movimientos = [];
+    for (const a of ajustes) {
+      const fila = porClave.get(claveStock(a.insumo_id, a.talle));
+      const nuevo = a.tipo === 'ajuste' ? a.delta : fila.stock + a.delta;
+      movimientos.push({ ...a, cantidad: nuevo - fila.stock });
+      fila.stock = nuevo;
     }
-
-    setStock(insumo_id, talle, newStock);
-
-    run(
-      `INSERT INTO movimientos_stock (insumo_id, talle, tipo, cantidad, referencia_tipo, referencia_id)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [insumo_id, talle, tipo, movimientoCantidad, referencia_tipo, referencia_id]
-    );
+    const cambiadas = [...porClave.values()];
+    await run(`
+      UPDATE insumo_stock s SET stock = v.stock
+      FROM unnest(?::int[], ?::int[]) AS v(id, stock) WHERE s.id = v.id`,
+    [cambiadas.map(f => f.id), cambiadas.map(f => f.stock)]);
+    await run(`
+      INSERT INTO movimientos_stock (insumo_id, talle, tipo, cantidad, referencia_tipo, referencia_id)
+      SELECT m.insumo_id, m.talle, m.tipo, m.cantidad, m.referencia_tipo, m.referencia_id
+      FROM unnest(?::int[], ?::text[], ?::text[], ?::int[], ?::text[], ?::int[]) WITH ORDINALITY
+           AS m(insumo_id, talle, tipo, cantidad, referencia_tipo, referencia_id, n)
+      ORDER BY m.n`,
+    [movimientos.map(m => m.insumo_id), movimientos.map(m => m.talle), movimientos.map(m => m.tipo),
+      movimientos.map(m => m.cantidad), movimientos.map(m => m.referencia_tipo ?? null),
+      movimientos.map(m => m.referencia_id ?? null)]);
+    for (const f of cambiadas) finales.set(claveStock(f.insumo_id, f.talle), f.stock);
   });
+  return finales;
+}
+
+/**
+ * Ajusta el stock de un insumo+talle y registra el movimiento. Permite stock negativo.
+ * tipo 'ajuste': delta es el valor final; el movimiento guarda la diferencia.
+ * Devuelve el stock final.
+ */
+async function adjustStock(insumo_id, talle, delta, tipo, referencia_tipo = null, referencia_id = null) {
+  const finales = await ajustarVarios([{ insumo_id, talle, delta, tipo, referencia_tipo, referencia_id }]);
+  return finales.get(claveStock(insumo_id, normalizarTalle(talle)));
 }
 
 const TIPOS_CON_TALLE = ['plantilla', 'fondo'];
@@ -132,7 +184,7 @@ function usaTalle(tipoInsumo) {
  * - ajuste: cantidad = valor final, entero >= 0 (permite fijar en 0).
  * - Plantillas y fondos requieren talle; cierres y hebillas no llevan talle.
  */
-function registrarMovimientoManual({ insumo_id, talle, cantidad, tipo, referencia_tipo = null, referencia_id = null }) {
+async function registrarMovimientoManual({ insumo_id, talle, cantidad, tipo, referencia_tipo = null, referencia_id = null }) {
   if (!TIPOS_MOVIMIENTO_MANUAL.includes(tipo)) {
     throw new AppError('Tipo de movimiento inválido (ingreso, egreso o ajuste)');
   }
@@ -141,21 +193,44 @@ function registrarMovimientoManual({ insumo_id, talle, cantidad, tipo, referenci
   if (tipo === 'ajuste' ? n < 0 : n <= 0) {
     throw new AppError(tipo === 'ajuste' ? 'El valor del ajuste no puede ser negativo' : 'La cantidad debe ser mayor que cero');
   }
-  const insumo = get('SELECT id, tipo FROM insumos WHERE id = ?', [insumo_id]);
+  if (!Number.isInteger(insumo_id)) throw new AppError('Insumo no encontrado', 404);
+  const insumo = await get('SELECT id, tipo FROM insumos WHERE id = ?', [insumo_id]);
   if (!insumo) throw new AppError('Insumo no encontrado', 404);
   const t = normalizarTalle(talle);
   if (usaTalle(insumo.tipo) && t === null) throw new AppError('Este insumo lleva stock por talle: indicá el talle');
   if (!usaTalle(insumo.tipo) && t !== null) throw new AppError('Este insumo no lleva talle');
 
   const delta = tipo === 'egreso' ? -n : n;
-  adjustStock(insumo.id, t, delta, tipo, referencia_tipo, referencia_id);
-  return { insumo_id: insumo.id, talle: t, stock: getStock(insumo.id, t) };
+  const stock = await adjustStock(insumo.id, t, delta, tipo, referencia_tipo, referencia_id);
+  return { insumo_id: insumo.id, talle: t, stock };
+}
+
+/** Productos (con plantilla y fondo) y accesorios de varios productos, en dos consultas. */
+async function recetas(productoIds) {
+  const ids = [...new Set(productoIds)];
+  const [productos, accesorios] = await Promise.all([
+    all(`
+      SELECT p.id, p.nombre AS producto_nombre,
+             p.plantilla_id, p.fondo_id,
+             i1.nombre AS plantilla_nombre, i1.tipo AS plantilla_tipo,
+             i2.nombre AS fondo_nombre,     i2.tipo AS fondo_tipo
+      FROM productos p
+      JOIN insumos i1 ON i1.id = p.plantilla_id
+      JOIN insumos i2 ON i2.id = p.fondo_id
+      WHERE p.id = ANY(?::int[])`, [ids]),
+    all(`
+      SELECT pa.*, i.nombre AS insumo_nombre, i.tipo AS insumo_tipo
+      FROM producto_accesorios pa LEFT JOIN insumos i ON i.id = pa.insumo_id
+      WHERE pa.producto_id = ANY(?::int[]) ORDER BY pa.id`, [ids]),
+  ]);
+  const accPorProducto = new Map(ids.map(id => [id, []]));
+  for (const a of accesorios) accPorProducto.get(a.producto_id).push(a);
+  return { productos: new Map(productos.map(p => [p.id, p])), accesorios: accPorProducto };
 }
 
 /**
  * Verificar stock para una orden — agrupado por PRODUCTO con consumo acumulado.
  *
- * LÓGICA CORRECTA:
  * - Se procesan los detalles en orden.
  * - Cada consumo descuenta del stock virtual (no del real).
  * - Si dos productos (o dos bloques del mismo) usan el mismo insumo,
@@ -164,42 +239,30 @@ function registrarMovimientoManual({ insumo_id, talle, cantidad, tipo, referenci
  * Retorna: [ { producto_id, producto_nombre, insumos: [...] } ]
  * donde cada insumo tiene: { insumo_id, nombre, tipo, talle, stock_actual, necesario, faltante }
  */
-function verificarStockOrden(detalles) {
-  const db = getDb();
+async function verificarStockOrden(detalles) {
+  const { productos, accesorios } = await recetas(detalles.map(d => d.producto_id));
 
-  // Stock virtual: copia mutable del stock real, se va decrementando
-  // key: `${insumo_id}|${talle ?? 'null'}`
-  const stockVirtual = {};
-
-  function getVirtual(insumo_id, talle) {
-    const key = `${insumo_id}|${talle ?? 'null'}`;
-    if (!(key in stockVirtual)) {
-      stockVirtual[key] = getStock(insumo_id, talle);
-    }
-    return stockVirtual[key];
+  // Todo el stock necesario en una sola consulta.
+  const claves = [];
+  for (const det of detalles) {
+    const p = productos.get(det.producto_id);
+    if (!p) continue;
+    claves.push({ insumo_id: p.plantilla_id, talle: det.talle }, { insumo_id: p.fondo_id, talle: det.talle });
+    for (const acc of accesorios.get(det.producto_id)) claves.push({ insumo_id: acc.insumo_id, talle: null });
   }
-
-  function consumirVirtual(insumo_id, talle, cantidad) {
-    const key = `${insumo_id}|${talle ?? 'null'}`;
-    if (!(key in stockVirtual)) {
-      stockVirtual[key] = getStock(insumo_id, talle);
-    }
-    stockVirtual[key] -= cantidad;
-  }
+  const stockReal = await stockDeVarios(claves);
+  const stockVirtual = new Map(stockReal);
+  const real = (insumo_id, talle) => stockReal.get(claveStock(insumo_id, normalizarTalle(talle)));
+  const virtual = (insumo_id, talle) => stockVirtual.get(claveStock(insumo_id, normalizarTalle(talle)));
+  const consumirVirtual = (insumo_id, talle, cantidad) => {
+    const k = claveStock(insumo_id, normalizarTalle(talle));
+    stockVirtual.set(k, stockVirtual.get(k) - cantidad);
+  };
 
   const resultadoPorProducto = [];
 
   for (const det of detalles) {
-    const producto = db.prepare(`
-      SELECT p.id, p.nombre AS producto_nombre,
-             p.plantilla_id, p.fondo_id,
-             i1.nombre AS plantilla_nombre, i1.tipo AS plantilla_tipo,
-             i2.nombre AS fondo_nombre,     i2.tipo AS fondo_tipo
-      FROM productos p
-      JOIN insumos i1 ON i1.id = p.plantilla_id
-      JOIN insumos i2 ON i2.id = p.fondo_id
-      WHERE p.id = ?
-    `).get(det.producto_id);
+    const producto = productos.get(det.producto_id);
     if (!producto) continue;
 
     const pares = det.cantidad;
@@ -213,51 +276,46 @@ function verificarStockOrden(detalles) {
     };
 
     // — Plantilla —
-    const stockAntesPlantilla = getVirtual(producto.plantilla_id, det.talle);
-    const faltantePlantilla   = Math.max(0, pares - stockAntesPlantilla);
+    const stockAntesPlantilla = virtual(producto.plantilla_id, det.talle);
     bloque.insumos.push({
       insumo_id:    producto.plantilla_id,
       nombre:       producto.plantilla_nombre,
       tipo:         'plantilla',
       talle:        det.talle,
-      stock_actual: getStock(producto.plantilla_id, det.talle),  // stock real para mostrar
-      stock_virtual: stockAntesPlantilla,                        // stock disponible en este momento
+      stock_actual: real(producto.plantilla_id, det.talle),  // stock real para mostrar
+      stock_virtual: stockAntesPlantilla,                    // stock disponible en este momento
       necesario:    pares,
-      faltante:     faltantePlantilla,
+      faltante:     Math.max(0, pares - stockAntesPlantilla),
     });
     consumirVirtual(producto.plantilla_id, det.talle, pares);
 
     // — Fondo —
-    const stockAntesFondo = getVirtual(producto.fondo_id, det.talle);
-    const faltanteFondo   = Math.max(0, pares - stockAntesFondo);
+    const stockAntesFondo = virtual(producto.fondo_id, det.talle);
     bloque.insumos.push({
       insumo_id:    producto.fondo_id,
       nombre:       producto.fondo_nombre,
       tipo:         'fondo',
       talle:        det.talle,
-      stock_actual: getStock(producto.fondo_id, det.talle),
+      stock_actual: real(producto.fondo_id, det.talle),
       stock_virtual: stockAntesFondo,
       necesario:    pares,
-      faltante:     faltanteFondo,
+      faltante:     Math.max(0, pares - stockAntesFondo),
     });
     consumirVirtual(producto.fondo_id, det.talle, pares);
 
     // — Accesorios —
-    const accs = db.prepare('SELECT * FROM producto_accesorios WHERE producto_id=?').all(det.producto_id);
-    for (const acc of accs) {
-      const insumo      = db.prepare('SELECT * FROM insumos WHERE id=?').get(acc.insumo_id);
-      const necesario   = pares * acc.cantidad_por_par;
-      const stockAntes  = getVirtual(acc.insumo_id, null);
-      const faltante    = Math.max(0, necesario - stockAntes);
+    for (const acc of accesorios.get(det.producto_id)) {
+      const necesario  = pares * acc.cantidad_por_par;
+      const stockAntes = virtual(acc.insumo_id, null);
       bloque.insumos.push({
         insumo_id:    acc.insumo_id,
-        nombre:       insumo ? insumo.nombre : '?',
-        tipo:         insumo ? insumo.tipo : '?',
+        nombre:       acc.insumo_nombre ?? '?',
+        tipo:         acc.insumo_tipo ?? '?',
         talle:        null,
-        stock_actual: getStock(acc.insumo_id, null),
+        stock_actual: real(acc.insumo_id, null),
         stock_virtual: stockAntes,
         necesario,
-        faltante,
+        faltante:     Math.max(0, necesario - stockAntes),
       });
       consumirVirtual(acc.insumo_id, null, necesario);
     }
@@ -269,26 +327,23 @@ function verificarStockOrden(detalles) {
 }
 
 /**
- * Deduct stock for confirmed order. Allows negatives.
+ * Descuenta el stock de una planilla confirmada (un movimiento por insumo de
+ * cada línea, como siempre). Permite negativos.
  */
-function consumirStockOrden(orden_id, detalles) {
-  const db = getDb();
-  transaction(() => {
-    for (const det of detalles) {
-      const producto = db.prepare('SELECT * FROM productos WHERE id=?').get(det.producto_id);
-      if (!producto) continue;
-
-      const pares = det.cantidad;
-
-      adjustStock(producto.plantilla_id, det.talle, -pares, 'consumo_orden', 'orden', orden_id);
-      adjustStock(producto.fondo_id, det.talle, -pares, 'consumo_orden', 'orden', orden_id);
-
-      const accs = db.prepare('SELECT * FROM producto_accesorios WHERE producto_id=?').all(det.producto_id);
-      for (const acc of accs) {
-        adjustStock(acc.insumo_id, null, -(pares * acc.cantidad_por_par), 'consumo_orden', 'orden', orden_id);
-      }
-    }
-  });
+async function consumirStockOrden(orden_id, detalles) {
+  const { productos, accesorios } = await recetas(detalles.map(d => d.producto_id));
+  const ajustes = [];
+  for (const det of detalles) {
+    const producto = productos.get(det.producto_id);
+    if (!producto) continue;
+    const pares = det.cantidad;
+    const consumo = (insumo_id, talle, cantidad) =>
+      ajustes.push({ insumo_id, talle, delta: -cantidad, tipo: 'consumo_orden', referencia_tipo: 'orden', referencia_id: orden_id });
+    consumo(producto.plantilla_id, det.talle, pares);
+    consumo(producto.fondo_id, det.talle, pares);
+    for (const acc of accesorios.get(det.producto_id)) consumo(acc.insumo_id, null, pares * acc.cantidad_por_par);
+  }
+  await ajustarVarios(ajustes);
 }
 
 // ------------------------------------------------------------------
@@ -303,8 +358,6 @@ function consumirStockOrden(orden_id, detalles) {
 //     habilitado: un negativo nunca se oculta.
 //   · Sin stock y stock bajo solo cuentan en talles habilitados o en
 //     stock general (cierres / hebillas).
-//   · Se usa la fila vigente de stock general: los duplicados históricos
-//     no generan alertas repetidas.
 // ------------------------------------------------------------------
 
 const PRIORIDAD_ESTADO = { faltante: 0, sin_stock: 1, stock_bajo: 2, ok: 3 };
@@ -341,8 +394,8 @@ function estadoStock(insumo, filas, tallesHabilitados) {
 }
 
 /** Alertas de inventario (faltantes y stock bajo), sin duplicados. */
-function getAlertasStock() {
-  const rows = all(`
+async function getAlertasStock() {
+  const rows = await all(`
     SELECT i.id, i.nombre, i.tipo, i.stock_minimo, i.proveedor_id,
            p.nombre AS proveedor_nombre,
            s.id AS stock_id, s.talle, s.stock,
@@ -378,14 +431,37 @@ function getAlertasStock() {
  * Completa un insumo con talles habilitados, filas de stock vigentes,
  * total, duplicados pendientes y estado de stock.
  */
-function detalleInsumo(row) {
-  row.talles = all('SELECT talle FROM insumo_talles WHERE insumo_id=? ORDER BY talle', [row.id]).map(t => t.talle);
-  row.stock_rows = getStockRows(row.id);
-  row.stock_total = row.stock_rows.reduce((s, r) => s + r.stock, 0);
-  row.stock_duplicados = contarFilasDuplicadas(row.id);
-  row.estado_stock = estadoStock(row, row.stock_rows, row.talles);   // 'faltante' | 'sin_stock' | 'stock_bajo' | 'ok'
-  row.sin_talles_habilitados = usaTalle(row.tipo) && row.talles.length === 0;
+async function detalleInsumo(row) {
+  await detallesInsumos([row]);
   return row;
+}
+
+/** Igual que detalleInsumo, para varios insumos con solo dos consultas en total. */
+async function detallesInsumos(rows) {
+  if (!rows.length) return rows;
+  const ids = rows.map(r => r.id);
+  const [talles, stock] = await Promise.all([
+    all('SELECT insumo_id, talle FROM insumo_talles WHERE insumo_id = ANY(?::int[]) ORDER BY talle', [ids]),
+    all('SELECT * FROM insumo_stock WHERE insumo_id = ANY(?::int[]) ORDER BY talle NULLS FIRST, id', [ids]),
+  ]);
+  const tallesDe = new Map(ids.map(id => [id, []]));
+  for (const t of talles) tallesDe.get(t.insumo_id).push(t.talle);
+  const stockDe = new Map(ids.map(id => [id, { filas: [], generales: 0 }]));
+  for (const f of stock) {
+    const s = stockDe.get(f.insumo_id);
+    if (f.talle === null && s.generales++ > 0) continue;   // fila vigente: la de menor id
+    s.filas.push(f);
+  }
+  for (const row of rows) {
+    const s = stockDe.get(row.id);
+    row.talles = tallesDe.get(row.id);
+    row.stock_rows = s.filas;
+    row.stock_total = s.filas.reduce((t, r) => t + r.stock, 0);
+    row.stock_duplicados = Math.max(0, s.generales - 1);
+    row.estado_stock = estadoStock(row, row.stock_rows, row.talles);   // 'faltante' | 'sin_stock' | 'stock_bajo' | 'ok'
+    row.sin_talles_habilitados = usaTalle(row.tipo) && row.talles.length === 0;
+  }
+  return rows;
 }
 
 /** Plantillas y fondos sin talles habilitados: no pueden generar alertas de stock bajo. */
@@ -406,6 +482,9 @@ module.exports = {
   insumosConDuplicados,
   setStock,
   adjustStock,
+  ajustarVarios,
+  stockDeVarios,
+  claveStock,
   usaTalle,
   registrarMovimientoManual,
   TIPOS_CON_TALLE,
@@ -416,5 +495,6 @@ module.exports = {
   clasificarFila,
   estadoStock,
   detalleInsumo,
+  detallesInsumos,
   insumosSinTallesHabilitados,
 };

@@ -2,155 +2,153 @@
 // ============================================================
 // Utilidades de prueba.
 //
-// SEGURIDAD: cada archivo de prueba trabaja sobre una base SQLite NUEVA en
-// una carpeta temporal, marcada como base de pruebas. Las pruebas nunca
-// abren la base de trabajo configurada en .env ni ./calzado.db.
+// SEGURIDAD: cada archivo de prueba levanta su propio PostgreSQL en memoria
+// (PGlite, dentro del mismo proceso) y la app lo usa en lugar de abrir una
+// conexión. Las pruebas nunca usan la base de Supabase:
+//   · la app recibe la base de prueba antes de su primera consulta;
+//   · DATABASE_URL se fija a una dirección local inexistente (el .env no
+//     pisa variables ya definidas), por si algo intentara conectarse;
+//   · db/postgres/conexion.js rechaza bases remotas durante node --test;
+//   · iniciar() verifica que la base sea PGlite antes de seguir.
 //
-// Uso (antes de requerir cualquier módulo de la app):
+// Uso:
 //   const h = require('./helpers');
-//   const base = h.prepararBaseDePruebas();
+//   const srv = h.iniciar();          // promesa: base + esquema + servidor HTTP
+//   before(() => srv);
+//   after(() => h.cerrar());
 // ============================================================
 
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
-const Database = require('better-sqlite3');
+const { PoolPGlite } = require('./pglite-pool');
 
 const RAIZ = path.join(__dirname, '..');
-const TEST_DB_MARKER = 0x44435954; // igual a db/database.js
 
-/** Rutas que las pruebas jamás deben tocar. */
-function rutasProtegidas() {
-  const rutas = [path.join(RAIZ, 'calzado.db')];
-  const env = path.join(RAIZ, '.env');
-  if (fs.existsSync(env)) {
-    const m = fs.readFileSync(env, 'utf8').match(/^\s*DB_PATH\s*=\s*(.+?)\s*$/m);
-    if (m) rutas.push(path.resolve(m[1].replace(/^["']|["']$/g, '')));
-  }
-  return rutas.map(r => r.toLowerCase());
-}
+// Antes de cargar cualquier módulo de la app: ninguna conexión remota posible.
+process.env.DATABASE_URL = 'postgres://postgres@127.0.0.1:1/postgres';
 
 let _estado = null;
 
-/**
- * opciones.migrar (por defecto true): aplica las migraciones versionadas a la
- * base de prueba. Con false se obtiene una base "como la real antes de E4".
- */
-function prepararBaseDePruebas({ migrar = true } = {}) {
-  if (_estado) return _estado;
-  if (require.cache[require.resolve('../db/database')]) {
-    throw new Error('prepararBaseDePruebas() debe llamarse antes de cargar db/database.js');
-  }
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'darc-pruebas-'));
-  const dbPath = path.join(dir, 'pruebas.db');
-  if (rutasProtegidas().includes(dbPath.toLowerCase())) throw new Error('Ruta de prueba coincide con una base protegida');
+async function iniciar() {
+  if (_estado) return _estado.srv;
+  const { PGlite, types } = await import('@electric-sql/pglite');
+  // Mismos tipos que entrega db/postgres/conexion.js con "pg": COUNT/SUM como Number.
+  const pglite = await PGlite.create({
+    parsers: { [types.INT8]: v => Number(v), [types.NUMERIC]: v => Number(v) },
+  });
+  const { version } = (await pglite.query('SELECT version() AS version')).rows[0];
+  if (!/PGlite/.test(version)) throw new Error(`La base de pruebas no es PGlite: ${version}`);
+  await pglite.exec(fs.readFileSync(path.join(RAIZ, 'db', 'postgres', 'esquema.sql'), 'utf8'));
 
-  const db = new Database(dbPath);
-  db.pragma(`application_id = ${TEST_DB_MARKER}`);
-  db.close();
-
-  process.env.DB_PATH = dbPath;
   const database = require('../db/database');
-  if (database.DB_PATH.toLowerCase() !== dbPath.toLowerCase()) {
-    throw new Error(`La app no usa la base de prueba (usa ${database.DB_PATH})`);
-  }
-  if (!database.esBaseDePruebas(database.getDb())) throw new Error('La base abierta no está marcada como de pruebas');
-  if (migrar) require('../db/migraciones').aplicarPendientes(database.getDb());
+  database.usarPool(new PoolPGlite(pglite));
 
-  _estado = {
-    dbPath,
-    db: database.getDb(),
-    cerrar() {
-      try { database.getDb().close(); } catch {}
-      fs.rmSync(dir, { recursive: true, force: true });
-    },
-  };
-  return _estado;
+  const srv = await iniciarServidor();
+  _estado = { pglite, database, srv };
+  return srv;
+}
+
+async function cerrar() {
+  if (!_estado) return;
+  const { pglite, database, srv } = _estado;
+  _estado = null;
+  await srv.cerrar();
+  await database.cerrar();
+  await pglite.close();
 }
 
 function db() {
-  if (!_estado) throw new Error('Llamar primero a prepararBaseDePruebas()');
-  const d = _estado.db;
-  if (d.pragma('application_id', { simple: true }) !== TEST_DB_MARKER) throw new Error('Base sin marca de pruebas');
-  return d;
+  if (!_estado) throw new Error('Llamar primero a iniciar()');
+  return _estado.database;
 }
 
-/** Vacía todas las tablas de datos (solo bases de prueba). Conserva los responsables. */
-function resetear() {
-  for (const t of ['pedido_responsable', 'insumo_responsable']) {
-    if (db().prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(t)) db().exec(`DELETE FROM ${t}`);
-  }
-  db().exec(`
-    DELETE FROM movimientos_stock; DELETE FROM detalle_pedido_proveedor; DELETE FROM pedidos_proveedor;
-    DELETE FROM detalle_orden; DELETE FROM ordenes_produccion; DELETE FROM producto_accesorios;
-    DELETE FROM producto_talles; DELETE FROM productos; DELETE FROM insumo_talles;
-    DELETE FROM insumo_stock; DELETE FROM insumos; DELETE FROM proveedores;
-  `);
-}
+// ——— Consultas directas a la base de prueba (sin pasar por la lógica) ———
 
-// ——— Datos de prueba (inserción directa, sin pasar por la lógica) ———
+const q = (sql, params) => db().all(sql, params);
+const uno = (sql, params) => db().get(sql, params);
+const ejecutar = (sql, params) => db().run(sql, params);
+
+/** Vacía todas las tablas de datos. Conserva los responsables (y deja a todos activos). */
+async function resetear() {
+  await ejecutar(`
+    TRUNCATE pedido_responsable, insumo_responsable, movimientos_stock, detalle_pedido_proveedor,
+             pedidos_proveedor, detalle_orden, ordenes_produccion, producto_accesorios,
+             producto_talles, productos, insumo_talles, insumo_stock, insumos, proveedores
+    RESTART IDENTITY`);
+  await ejecutar('UPDATE responsables SET activo = 1');
+}
 
 function crearProveedor(nombre = 'Proveedor prueba') {
-  return Number(db().prepare('INSERT INTO proveedores (nombre) VALUES (?)').run(nombre).lastInsertRowid);
+  return db().insert('INSERT INTO proveedores (nombre) VALUES (?)', [nombre]);
 }
 
-function crearInsumo({ nombre = 'Insumo', tipo, stock_minimo = 0, proveedor_id = null, talles = [], stock = {} }) {
-  const id = Number(db().prepare('INSERT INTO insumos (nombre, tipo, stock_minimo, proveedor_id) VALUES (?,?,?,?)')
-    .run(nombre, tipo, stock_minimo, proveedor_id).lastInsertRowid);
-  for (const t of talles) db().prepare('INSERT INTO insumo_talles (insumo_id, talle) VALUES (?,?)').run(id, t);
+async function crearInsumo({ nombre = 'Insumo', tipo, stock_minimo = 0, proveedor_id = null, talles = [], stock = {} }) {
+  const id = await db().insert('INSERT INTO insumos (nombre, tipo, stock_minimo, proveedor_id) VALUES (?,?,?,?)',
+    [nombre, tipo, stock_minimo, proveedor_id]);
+  for (const t of talles) await ejecutar('INSERT INTO insumo_talles (insumo_id, talle) VALUES (?,?)', [id, t]);
   for (const [talle, valor] of Object.entries(stock)) {
-    insertarFilaStock(id, talle === 'general' ? null : talle, valor);
+    await insertarFilaStock(id, talle === 'general' ? null : talle, valor);
   }
   return id;
 }
 
-/** Inserta una fila de stock tal cual (sirve para simular duplicados históricos). */
+/** Inserta una fila de stock tal cual. */
 function insertarFilaStock(insumo_id, talle, valor) {
-  return Number(db().prepare('INSERT INTO insumo_stock (insumo_id, talle, stock) VALUES (?,?,?)')
-    .run(insumo_id, talle, valor).lastInsertRowid);
+  return db().insert('INSERT INTO insumo_stock (insumo_id, talle, stock) VALUES (?,?,?)', [insumo_id, talle, valor]);
 }
 
-function crearProducto({ nombre = 'Producto', plantilla_id, fondo_id, talles = [], accesorios = [] }) {
-  const id = Number(db().prepare('INSERT INTO productos (nombre, plantilla_id, fondo_id) VALUES (?,?,?)')
-    .run(nombre, plantilla_id, fondo_id).lastInsertRowid);
-  for (const t of talles) db().prepare('INSERT INTO producto_talles (producto_id, talle) VALUES (?,?)').run(id, t);
+async function crearProducto({ nombre = 'Producto', plantilla_id, fondo_id, talles = [], accesorios = [] }) {
+  const id = await db().insert('INSERT INTO productos (nombre, plantilla_id, fondo_id) VALUES (?,?,?)',
+    [nombre, plantilla_id, fondo_id]);
+  for (const t of talles) await ejecutar('INSERT INTO producto_talles (producto_id, talle) VALUES (?,?)', [id, t]);
   for (const a of accesorios) {
-    db().prepare('INSERT INTO producto_accesorios (producto_id, insumo_id, cantidad_por_par) VALUES (?,?,?)')
-      .run(id, a.insumo_id, a.cantidad_por_par);
+    await ejecutar('INSERT INTO producto_accesorios (producto_id, insumo_id, cantidad_por_par) VALUES (?,?,?)',
+      [id, a.insumo_id, a.cantidad_por_par]);
   }
   return id;
 }
 
-function responsableId(slug) {
-  return db().prepare('SELECT id FROM responsables WHERE slug = ?').get(slug).id;
+async function responsableId(slug) {
+  return (await uno('SELECT id FROM responsables WHERE slug = ?', [slug])).id;
 }
 
-function asignarDirecto(insumo_id, slug) {
-  db().prepare('INSERT OR REPLACE INTO insumo_responsable (insumo_id, responsable_id) VALUES (?, ?)').run(insumo_id, responsableId(slug));
+async function asignarDirecto(insumo_id, slug) {
+  await ejecutar(`INSERT INTO insumo_responsable (insumo_id, responsable_id) VALUES (?, ?)
+                  ON CONFLICT (insumo_id) DO UPDATE SET responsable_id = excluded.responsable_id`,
+  [insumo_id, await responsableId(slug)]);
 }
 
 function filasStock(insumo_id) {
-  return db().prepare('SELECT * FROM insumo_stock WHERE insumo_id=? ORDER BY id').all(insumo_id);
+  return q('SELECT * FROM insumo_stock WHERE insumo_id=? ORDER BY id', [insumo_id]);
 }
 
 function movimientos(where = '1=1', params = []) {
-  return db().prepare(`SELECT * FROM movimientos_stock WHERE ${where} ORDER BY id`).all(...params);
+  return q(`SELECT * FROM movimientos_stock WHERE ${where} ORDER BY id`, params);
+}
+
+/** Huella del inventario: stock, movimientos, pedidos y planillas (para verificar que nada cambió). */
+async function huella() {
+  const tablas = ['insumos', 'insumo_stock', 'insumo_talles', 'movimientos_stock', 'pedidos_proveedor',
+    'detalle_pedido_proveedor', 'ordenes_produccion', 'detalle_orden'];
+  const r = {};
+  for (const t of tablas) r[t] = JSON.stringify(await q(`SELECT * FROM ${t} ORDER BY id`));
+  return r;
 }
 
 /**
  * Escenario típico: proveedor, plantilla y fondo por talle (38 y 39 habilitados),
  * un cierre general y un producto que usa 2 cierres por par.
  */
-function escenarioBase({ stockPlantilla = 10, stockFondo = 10, stockCierre = 50 } = {}) {
-  resetear();
-  const prov = crearProveedor('Proveedor A');
-  const plantilla = crearInsumo({ nombre: 'Plantilla T', tipo: 'plantilla', stock_minimo: 3, proveedor_id: prov,
+async function escenarioBase({ stockPlantilla = 10, stockFondo = 10, stockCierre = 50 } = {}) {
+  await resetear();
+  const prov = await crearProveedor('Proveedor A');
+  const plantilla = await crearInsumo({ nombre: 'Plantilla T', tipo: 'plantilla', stock_minimo: 3, proveedor_id: prov,
     talles: ['38', '39'], stock: { 38: stockPlantilla, 39: stockPlantilla } });
-  const fondo = crearInsumo({ nombre: 'Fondo T', tipo: 'fondo', stock_minimo: 3, proveedor_id: prov,
+  const fondo = await crearInsumo({ nombre: 'Fondo T', tipo: 'fondo', stock_minimo: 3, proveedor_id: prov,
     talles: ['38', '39'], stock: { 38: stockFondo, 39: stockFondo } });
-  const cierre = crearInsumo({ nombre: 'Cierre G', tipo: 'cierre', stock_minimo: 5, proveedor_id: prov,
+  const cierre = await crearInsumo({ nombre: 'Cierre G', tipo: 'cierre', stock_minimo: 5, proveedor_id: prov,
     stock: { general: stockCierre } });
-  const producto = crearProducto({ nombre: 'Bota', plantilla_id: plantilla, fondo_id: fondo, talles: ['38', '39'],
+  const producto = await crearProducto({ nombre: 'Bota', plantilla_id: plantilla, fondo_id: fondo, talles: ['38', '39'],
     accesorios: [{ insumo_id: cierre, cantidad_por_par: 2 }] });
   return { prov, plantilla, fondo, cierre, producto };
 }
@@ -173,8 +171,7 @@ async function iniciarServidor() {
 }
 
 module.exports = {
-  prepararBaseDePruebas, db, resetear, rutasProtegidas,
+  iniciar, cerrar, db, q, uno, ejecutar, resetear,
   crearProveedor, crearInsumo, insertarFilaStock, crearProducto, responsableId, asignarDirecto,
-  filasStock, movimientos, escenarioBase, iniciarServidor,
-  TEST_DB_MARKER,
+  filasStock, movimientos, huella, escenarioBase,
 };

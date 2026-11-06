@@ -1,7 +1,7 @@
 'use strict';
 
 const PDFDocument = require('pdfkit');
-const { getDb } = require('../db/database');
+const { get, all } = require('../db/database');
 
 const TALLES = ['35','36','37','38','39','40','41','42','43','44','45','46'];
 
@@ -14,10 +14,17 @@ const TALLES = ['35','36','37','38','39','40','41','42','43','44','45','46'];
  * El nombre del producto incluye "(p.N)" para identificar el bloque.
  * Columna TOTAL muestra pares totales de ese bloque.
  */
-function generarPDFOrden(orden_id, res) {
-  const db = getDb();
+/** Fecha y hora en Argentina (dd/mm/aaaa hh:mm), sin depender de la zona del servidor. */
+function fechaAR(fecha) {
+  if (!fecha) return '';
+  return new Date(fecha).toLocaleString('es-AR', {
+    timeZone: 'America/Argentina/Buenos_Aires',
+    day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit',
+  });
+}
 
-  const orden = db.prepare('SELECT * FROM ordenes_produccion WHERE id=?').get(orden_id);
+async function generarPDFOrden(orden_id, res) {
+  const orden = Number.isInteger(orden_id) ? await get('SELECT * FROM ordenes_produccion WHERE id=?', [orden_id]) : null;
   if (!orden) {
     res.status(404).json({ error: 'Planilla no encontrada' });
     return;
@@ -25,7 +32,7 @@ function generarPDFOrden(orden_id, res) {
 
   // Leer detalles ordenados por numero_pedido.
   // Cada fila es una línea independiente — NO se fusionan productos iguales.
-  const detalles = db.prepare(`
+  const detalles = await all(`
     SELECT d.id, d.producto_id, d.talle, d.cantidad, d.numero_pedido,
            p.nombre AS producto_nombre, p.plantilla_id, p.fondo_id,
            i1.nombre AS plantilla_nombre,
@@ -36,8 +43,8 @@ function generarPDFOrden(orden_id, res) {
     JOIN insumos i1   ON i1.id = p.plantilla_id
     JOIN insumos i2   ON i2.id = p.fondo_id
     WHERE d.orden_id = ?
-    ORDER BY d.numero_pedido ASC
-  `).all(orden_id);
+    ORDER BY d.numero_pedido ASC, d.id ASC
+  `, [orden_id]);
 
   // Construir las "filas de impresión":
   // Una fila por detalle. El nombre del producto lleva "(p.N)".
@@ -49,16 +56,25 @@ function generarPDFOrden(orden_id, res) {
   //  pero cada uno insertado como fila independiente con su propio numero_pedido).
   // Por lo tanto: una fila en el PDF = una fila en detalle_orden = un numero_pedido.
 
+  // Accesorios de todos los productos de la planilla, en una sola consulta.
+  const accesoriosDe = new Map();
+  const productoIds = [...new Set(detalles.map(d => d.producto_id))];
+  for (const a of await all(`
+        SELECT pa.producto_id, pa.cantidad_por_par, i.nombre AS insumo_nombre, i.tipo, i.color
+        FROM producto_accesorios pa
+        JOIN insumos i ON i.id = pa.insumo_id
+        WHERE pa.producto_id = ANY(?::int[])
+        ORDER BY pa.id
+      `, [productoIds])) {
+    if (!accesoriosDe.has(a.producto_id)) accesoriosDe.set(a.producto_id, []);
+    accesoriosDe.get(a.producto_id).push(a);
+  }
+
   const agrupados = {};
 
   for (const d of detalles) {
     if (!agrupados[d.numero_pedido]) {
-      const accesorios = db.prepare(`
-        SELECT pa.cantidad_por_par, i.nombre AS insumo_nombre, i.tipo, i.color
-        FROM producto_accesorios pa
-        JOIN insumos i ON i.id = pa.insumo_id
-        WHERE pa.producto_id = ?
-      `).all(d.producto_id);
+      const accesorios = accesoriosDe.get(d.producto_id) || [];
 
       agrupados[d.numero_pedido] = {
         numero_pedido: d.numero_pedido,
@@ -81,7 +97,7 @@ function generarPDFOrden(orden_id, res) {
   const totalPares = filasPDF.reduce(
     (s, f) => s + Object.values(f.talles).reduce((a, b) => a + b, 0), 0
   );
-  const genDate = new Date().toLocaleString('es-AR');
+  const genDate = fechaAR(new Date());
 
   // ——— PDF setup ———
   const doc = new PDFDocument({
@@ -143,7 +159,7 @@ function generarPDFOrden(orden_id, res) {
       .text(`PLANILLA DE CORTE #${orden_id} — ${title}`, ML, 10, { width: PW * 0.62 });
     const sub = [
       orden.descripcion || 'Sin descripción',
-      orden.created_at,
+      fechaAR(orden.created_at),
       `Estado: ${orden.estado.toUpperCase()}`,
       `Líneas: ${filasPDF.length}`,
       `Pares totales: ${totalPares}`,

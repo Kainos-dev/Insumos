@@ -2,13 +2,13 @@
 // Clasificación de stock aprobada:
 //   negativo → faltante · cero → sin_stock
 //   0 < stock ≤ mínimo (con mínimo > 0) → stock_bajo · resto → ok
-const { test, after, beforeEach } = require('node:test');
+const { test, before, after, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 const h = require('./helpers');
-const base = h.prepararBaseDePruebas();
-const srv = h.iniciarServidor();
+const srv = h.iniciar();
 const { clasificarStock, getAlertasStock } = require('../services/stockService');
-after(async () => { await (await srv).cerrar(); base.cerrar(); });
+before(() => srv);
+after(() => h.cerrar());
 beforeEach(() => h.resetear());
 
 test('tabla de clasificación', () => {
@@ -25,32 +25,32 @@ test('tabla de clasificación', () => {
   }
 });
 
-test('alertas: sin stock en talles habilitados y en stock general; no en talles no habilitados', () => {
-  const p = h.crearInsumo({ nombre: 'Plantilla', tipo: 'plantilla', stock_minimo: 0, talles: ['38', '39'],
+test('alertas: sin stock en talles habilitados y en stock general; no en talles no habilitados', async () => {
+  const p = await h.crearInsumo({ nombre: 'Plantilla', tipo: 'plantilla', stock_minimo: 0, talles: ['38', '39'],
     stock: { 38: 0, 39: 3, 40: 0 } });
-  const c = h.crearInsumo({ nombre: 'Cierre', tipo: 'cierre', stock_minimo: 0, stock: { general: 0 } });
-  const a = getAlertasStock();
+  const c = await h.crearInsumo({ nombre: 'Cierre', tipo: 'cierre', stock_minimo: 0, stock: { general: 0 } });
+  const a = await getAlertasStock();
   assert.deepEqual(a.map(x => [x.id, x.talle, x.tipo_alerta]).sort(),
     [[c, null, 'sin_stock'], [p, '38', 'sin_stock']].sort());
 });
 
-test('mínimo 0 con stock positivo no genera alerta (antes "0/0" figuraba como stock bajo)', () => {
-  h.crearInsumo({ nombre: 'Hebilla', tipo: 'hebilla', stock_minimo: 0, stock: { general: 2 } });
-  assert.equal(getAlertasStock().length, 0);
+test('mínimo 0 con stock positivo no genera alerta (antes "0/0" figuraba como stock bajo)', async () => {
+  await h.crearInsumo({ nombre: 'Hebilla', tipo: 'hebilla', stock_minimo: 0, stock: { general: 2 } });
+  assert.equal((await getAlertasStock()).length, 0);
 });
 
-test('orden de gravedad: faltante, sin stock, stock bajo', () => {
-  h.crearInsumo({ nombre: 'A', tipo: 'hebilla', stock_minimo: 5, stock: { general: 3 } });
-  h.crearInsumo({ nombre: 'B', tipo: 'hebilla', stock_minimo: 5, stock: { general: 0 } });
-  h.crearInsumo({ nombre: 'C', tipo: 'hebilla', stock_minimo: 5, stock: { general: -1 } });
-  assert.deepEqual(getAlertasStock().map(x => x.tipo_alerta), ['faltante', 'sin_stock', 'stock_bajo']);
+test('orden de gravedad: faltante, sin stock, stock bajo', async () => {
+  await h.crearInsumo({ nombre: 'A', tipo: 'hebilla', stock_minimo: 5, stock: { general: 3 } });
+  await h.crearInsumo({ nombre: 'B', tipo: 'hebilla', stock_minimo: 5, stock: { general: 0 } });
+  await h.crearInsumo({ nombre: 'C', tipo: 'hebilla', stock_minimo: 5, stock: { general: -1 } });
+  assert.deepEqual((await getAlertasStock()).map(x => x.tipo_alerta), ['faltante', 'sin_stock', 'stock_bajo']);
 });
 
 test('dashboard y lista de insumos usan la misma clasificación', async () => {
   const { req } = await srv;
-  const sin = h.crearInsumo({ nombre: 'Sin', tipo: 'fondo', stock_minimo: 10, talles: ['38', '39'], stock: { 38: 0, 39: 4 } });
-  const bajo = h.crearInsumo({ nombre: 'Bajo', tipo: 'cierre', stock_minimo: 10, stock: { general: 4 } });
-  const ok = h.crearInsumo({ nombre: 'Ok', tipo: 'cierre', stock_minimo: 0, stock: { general: 1 } });
+  const sin = await h.crearInsumo({ nombre: 'Sin', tipo: 'fondo', stock_minimo: 10, talles: ['38', '39'], stock: { 38: 0, 39: 4 } });
+  const bajo = await h.crearInsumo({ nombre: 'Bajo', tipo: 'cierre', stock_minimo: 10, stock: { general: 4 } });
+  const ok = await h.crearInsumo({ nombre: 'Ok', tipo: 'cierre', stock_minimo: 0, stock: { general: 1 } });
   const d = (await req('GET', '/api/dashboard')).data;
   assert.deepEqual([d.faltantes.length, d.sin_stock.length, d.stock_bajo.length], [0, 1, 2]);
   const lista = (await req('GET', '/api/insumos')).data;
