@@ -1,12 +1,12 @@
 'use strict';
 
-const express = require('express');
-const router = express.Router();
+const { crearRouter } = require('../utils/router');
+const router = crearRouter();
 const { all } = require('../db/database');
 const { registrarMovimientoManual } = require('../services/stockService');
 
-router.get('/', (req, res) => {
-  const { insumo_id } = req.query;
+router.get('/', async (req, res) => {
+  const insumo_id = req.query.insumo_id ? Number(req.query.insumo_id) : null;
   let limit = Number(req.query.limit ?? 50);
   if (!Number.isInteger(limit) || limit < 1) limit = 50;
   limit = Math.min(limit, 1000);
@@ -19,19 +19,20 @@ router.get('/', (req, res) => {
     JOIN insumos i ON i.id=m.insumo_id
   `;
   const params = [];
-  if (insumo_id) {
+  if (insumo_id !== null) {
+    if (!Number.isInteger(insumo_id)) return res.json([]);
     sql += ' WHERE m.insumo_id=?';
     params.push(insumo_id);
   }
   sql += ' ORDER BY m.created_at DESC, m.id DESC LIMIT ?';
   params.push(limit);
-  res.json(all(sql, params));
+  res.json(await all(sql, params));
 });
 
-// Quick stock movement from dashboard
-router.post('/rapido', (req, res) => {
+// Movimiento rápido de stock desde el dashboard
+router.post('/rapido', async (req, res) => {
   const { insumo_id, talle, cantidad, tipo } = req.body;
-  res.json({ ok: true, ...registrarMovimientoManual({ insumo_id: Number(insumo_id), talle, cantidad, tipo }) });
+  res.json({ ok: true, ...(await registrarMovimientoManual({ insumo_id: Number(insumo_id), talle, cantidad, tipo })) });
 });
 
 module.exports = router;

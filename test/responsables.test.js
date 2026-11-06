@@ -1,20 +1,26 @@
 'use strict';
 // Responsables: asignación (máximo uno por insumo), paneles individuales
 // y garantía de que asignar no modifica el inventario.
-const { test, after, beforeEach } = require('node:test');
+const { test, before, after, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 const h = require('./helpers');
-const base = h.prepararBaseDePruebas();
-const srv = h.iniciarServidor();
-const { huellaInventario } = require('../db/huella');
-after(async () => { await (await srv).cerrar(); base.cerrar(); });
+const srv = h.iniciar();
+before(() => srv);
+after(() => h.cerrar());
 
 let e;
-beforeEach(() => { e = h.escenarioBase({ stockPlantilla: 10, stockFondo: 0, stockCierre: -3 }); });
+beforeEach(async () => { e = await h.escenarioBase({ stockPlantilla: 10, stockFondo: 0, stockCierre: -3 }); });
 const api = async (m, u, b) => (await srv).req(m, u, b);
-const asignar = (insumo, slug) => api('PUT', `/api/insumos/${insumo}/responsable`,
-  { responsable_id: slug === null ? null : h.responsableId(slug) });
-const filasAsignacion = () => h.db().prepare('SELECT * FROM insumo_responsable ORDER BY insumo_id').all();
+const asignar = async (insumo, slug) => api('PUT', `/api/insumos/${insumo}/responsable`,
+  { responsable_id: slug === null ? null : await h.responsableId(slug) });
+const filasAsignacion = () => h.q('SELECT * FROM insumo_responsable ORDER BY insumo_id');
+
+test('el módulo de responsables está disponible y sin migraciones pendientes', async () => {
+  const est = (await api('GET', '/api/responsables/estado')).data;
+  assert.deepEqual(est, { disponible: true, migraciones_pendientes: [] });
+  assert.deepEqual(await h.q('SELECT slug, nombre, activo FROM responsables ORDER BY id'),
+    [{ slug: 'ruben', nombre: 'Rubén', activo: 1 }, { slug: 'dani', nombre: 'Dani', activo: 1 }, { slug: 'jorge', nombre: 'Jorge', activo: 1 }]);
+});
 
 test('los insumos comienzan sin responsable y aparecen como sin asignar en Fábrica', async () => {
   const ins = (await api('GET', '/api/insumos')).data;
@@ -27,56 +33,53 @@ test('los insumos comienzan sin responsable y aparecen como sin asignar en Fábr
 
 test('asignar, cambiar y quitar: como máximo un responsable por insumo', async () => {
   assert.equal((await asignar(e.plantilla, 'ruben')).status, 200);
-  assert.deepEqual(filasAsignacion().map(f => f.responsable_id), [h.responsableId('ruben')]);
+  assert.deepEqual((await filasAsignacion()).map(f => f.responsable_id), [await h.responsableId('ruben')]);
   assert.equal((await asignar(e.plantilla, 'dani')).status, 200);
-  assert.equal(filasAsignacion().length, 1, 'cambiar reemplaza, no agrega');
-  assert.equal(filasAsignacion()[0].responsable_id, h.responsableId('dani'));
+  assert.equal((await filasAsignacion()).length, 1, 'cambiar reemplaza, no agrega');
+  assert.equal((await filasAsignacion())[0].responsable_id, await h.responsableId('dani'));
   const ins = (await api('GET', `/api/insumos/${e.plantilla}`)).data;
   assert.deepEqual([ins.responsable.slug, ins.responsable.nombre], ['dani', 'Dani']);
   assert.equal((await asignar(e.plantilla, null)).status, 200);
-  assert.equal(filasAsignacion().length, 0);
-  assert.throws(() => h.db().prepare('INSERT INTO insumo_responsable (insumo_id, responsable_id) VALUES (?, ?), (?, ?)')
-    .run(e.cierre, h.responsableId('ruben'), e.cierre, h.responsableId('jorge')), /UNIQUE|PRIMARY/);
+  assert.equal((await filasAsignacion()).length, 0);
+  await assert.rejects(() => h.ejecutar('INSERT INTO insumo_responsable (insumo_id, responsable_id) VALUES (?, ?), (?, ?)',
+    [e.cierre, 1, e.cierre, 3]), /duplicate key|unique/i);
 });
 
 test('asignar no modifica stock, movimientos ni historiales', async () => {
-  const antes = huellaInventario(h.db());
+  const antes = await h.huella();
   await asignar(e.plantilla, 'ruben');
   await asignar(e.fondo, 'jorge');
   await asignar(e.cierre, 'dani');
   await asignar(e.cierre, 'ruben');
   await asignar(e.fondo, null);
-  await api('PUT', '/api/responsables/asignaciones', { asignaciones: [{ insumo_id: e.fondo, responsable_id: h.responsableId('dani') }] });
-  assert.deepEqual(huellaInventario(h.db()), antes);
+  await api('PUT', '/api/responsables/asignaciones', { asignaciones: [{ insumo_id: e.fondo, responsable_id: await h.responsableId('dani') }] });
+  assert.deepEqual(await h.huella(), antes);
 });
 
 test('validaciones: responsable inexistente o inactivo, insumo inexistente', async () => {
   assert.equal((await api('PUT', `/api/insumos/${e.plantilla}/responsable`, { responsable_id: 999 })).status, 400);
-  h.db().prepare("UPDATE responsables SET activo = 0 WHERE slug = 'jorge'").run();
-  try {
-    const r = await asignar(e.plantilla, 'jorge');
-    assert.equal(r.status, 400);
-    assert.match(r.data.error, /no está activo/);
-  } finally {
-    h.db().prepare("UPDATE responsables SET activo = 1 WHERE slug = 'jorge'").run();
-  }
+  await h.ejecutar("UPDATE responsables SET activo = 0 WHERE slug = 'jorge'");
+  const r = await asignar(e.plantilla, 'jorge');
+  assert.equal(r.status, 400);
+  assert.match(r.data.error, /no está activo/);
   assert.equal((await asignar(999999, 'ruben')).status, 404);
-  assert.equal(filasAsignacion().length, 0);
+  assert.equal((await filasAsignacion()).length, 0);
 });
 
 test('asignación en bloque: si una falla no se aplica ninguna', async () => {
+  const rid = await h.responsableId('ruben');
   const r = await api('PUT', '/api/responsables/asignaciones', { asignaciones: [
-    { insumo_id: e.plantilla, responsable_id: h.responsableId('ruben') },
-    { insumo_id: 999999, responsable_id: h.responsableId('ruben') },
+    { insumo_id: e.plantilla, responsable_id: rid },
+    { insumo_id: 999999, responsable_id: rid },
   ] });
   assert.equal(r.status, 404);
-  assert.equal(filasAsignacion().length, 0);
+  assert.equal((await filasAsignacion()).length, 0);
   const ok = await api('PUT', '/api/responsables/asignaciones', { asignaciones: [
-    { insumo_id: e.plantilla, responsable_id: h.responsableId('ruben') },
-    { insumo_id: e.fondo, responsable_id: h.responsableId('ruben') },
+    { insumo_id: e.plantilla, responsable_id: rid },
+    { insumo_id: e.fondo, responsable_id: rid },
   ] });
   assert.equal(ok.status, 200);
-  assert.equal(filasAsignacion().length, 2);
+  assert.equal((await filasAsignacion()).length, 2);
 });
 
 test('cada panel muestra solo los insumos y alertas de su responsable', async () => {
@@ -100,8 +103,8 @@ test('cada panel muestra solo los insumos y alertas de su responsable', async ()
 });
 
 test('eliminar un insumo sin historial elimina también su asignación', async () => {
-  const id = h.crearInsumo({ nombre: 'Temporal', tipo: 'hebilla' });
+  const id = await h.crearInsumo({ nombre: 'Temporal', tipo: 'hebilla' });
   await asignar(id, 'jorge');
   assert.equal((await api('DELETE', `/api/insumos/${id}`)).status, 200);
-  assert.equal(filasAsignacion().filter(f => f.insumo_id === id).length, 0);
+  assert.equal((await filasAsignacion()).filter(f => f.insumo_id === id).length, 0);
 });
