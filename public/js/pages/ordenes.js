@@ -16,8 +16,8 @@ let _productosCache = [];
 // ——— LISTADO ———
 
 async function renderOrdenes(subId) {
-  setPageTitle('Órdenes de Producción');
-  setTopbarActions('<button class="btn btn-primary" onclick="modalCrearOrden()">+ Nueva Orden</button>');
+  setPageTitle('Planillas de Corte');
+  setTopbarActions('<button class="btn btn-primary" onclick="modalCrearOrden()">+ Nueva planilla</button>');
   loading();
 
   if (subId) {
@@ -29,7 +29,7 @@ async function renderOrdenes(subId) {
 
   if (!ordenes.length) {
     document.getElementById('pageBody').innerHTML =
-      '<div class="card">' + emptyState('Sin órdenes de producción') + '</div>';
+      '<div class="card">' + emptyState('Sin planillas de corte') + '</div>';
     return;
   }
 
@@ -55,17 +55,17 @@ async function renderOrdenes(subId) {
 
   document.getElementById('pageBody').innerHTML =
     '<div class="card"><div class="table-wrap"><table>' +
-    '<thead><tr><th>#</th><th>Descripción</th><th>Estado</th>' +
-    '<th>Líneas</th><th>Total Pares</th><th>Fecha</th><th>Acciones</th></tr></thead>' +
+    '<thead><tr><th>N.º planilla</th><th>Descripción</th><th>Estado</th>' +
+    '<th>Líneas</th><th>Total pares</th><th>Fecha</th><th>Acciones</th></tr></thead>' +
     '<tbody>' + rows + '</tbody>' +
     '</table></div></div>';
 }
 
 async function cancelarOrdenLista(id) {
-  if (!confirmAction('¿Cancelar esta orden?')) return;
+  if (!confirmAction('¿Cancelar esta planilla?')) return;
   try {
     await API.ordenes.cancelar(id);
-    toast('Orden cancelada', 'success');
+    toast('Planilla cancelada', 'success');
     renderOrdenes();
   } catch (e) { toast(e.message, 'error'); }
 }
@@ -96,17 +96,24 @@ async function renderOrdenDetalle(id) {
       ? '<div class="card">' +
           '<div class="card-title">Acciones</div>' +
           '<div style="display:flex;flex-direction:column;gap:8px">' +
-            '<button class="btn btn-gold"   onclick="verificarOrden()">🔍 Verificar Insumos</button>' +
-            '<button class="btn btn-green"  onclick="confirmarOrdenActual()">✓ Confirmar Orden</button>' +
-            '<button class="btn btn-danger" onclick="cancelarOrdenActual()">✕ Cancelar Orden</button>' +
+            '<button class="btn btn-gold"   onclick="verificarOrden()">🔍 Verificar insumos</button>' +
+            '<button class="btn btn-green"  onclick="confirmarOrdenActual()">✓ Confirmar planilla</button>' +
+            '<button class="btn btn-danger" onclick="cancelarOrdenActual()">✕ Cancelar planilla</button>' +
           '</div>' +
         '</div>'
-      : '') +
+      : orden.estado === 'confirmada'
+        ? '<div class="card">' +
+            '<div class="card-title">Acciones</div>' +
+            '<p class="text-muted text-small" style="margin-bottom:8px">Planilla confirmada: sus líneas ya no se pueden modificar. ' +
+            'Si se cancela, se devuelve al stock lo consumido y queda registrado en Movimientos.</p>' +
+            '<button class="btn btn-danger" style="width:100%" onclick="cancelarOrdenActual()">✕ Cancelar planilla y devolver stock</button>' +
+          '</div>'
+        : '') +
     '<div class="card">' +
       '<div class="card-title">Imprimir / Exportar</div>' +
       '<div style="display:flex;flex-direction:column;gap:8px">' +
-        '<button class="btn btn-primary" onclick="imprimirOrden(' + orden.id + ')">🖨 Imprimir Orden</button>' +
-        '<a class="btn" href="' + API.ordenes.pdfUrl(orden.id) + '" target="_blank" download="orden-' + orden.id + '.pdf">⬇ Descargar PDF</a>' +
+        '<button class="btn btn-primary" onclick="imprimirOrden(' + orden.id + ')">🖨 Imprimir planilla</button>' +
+        '<a class="btn" href="' + API.ordenes.pdfUrl(orden.id) + '" target="_blank" download="planilla-' + orden.id + '.pdf">⬇ Descargar PDF</a>' +
       '</div>' +
     '</div>' +
     '<div class="card">' +
@@ -123,13 +130,13 @@ async function renderOrdenDetalle(id) {
     // 1. Formulario de agregar (siempre arriba, visible de entrada)
     (isBorrador
       ? '<div class="card">' +
-          '<div class="card-title">Agregar Producto a la Orden</div>' +
+          '<div class="card-title">Agregar producto a la planilla</div>' +
           buildAddBloqueForm(productos) +
         '</div>'
       : '') +
     // 2. Tabla de detalles (debajo del formulario)
     '<div class="card">' +
-      '<div class="card-title">Detalles de la Orden' +
+      '<div class="card-title">Detalle de la planilla' +
         (orden.detalles.length ? ' <span class="text-muted" style="font-size:11px;font-weight:400">(' + orden.detalles.length + ' líneas)</span>' : '') +
       '</div>' +
       '<div class="table-wrap">' +
@@ -145,11 +152,11 @@ async function renderOrdenDetalle(id) {
     '</div>';
 
   document.getElementById('pageBody').innerHTML =
-    // Cabecera de la orden
-    '<div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">' +
+    // Cabecera de la planilla
+    '<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">' +
       '<button class="btn btn-sm btn-ghost" onclick="renderOrdenes()">← Volver</button>' +
-      '<h2 style="font-family:var(--font-head);font-size:20px;font-weight:800">' +
-        'Orden #' + orden.id + ' ' + estadoBadge(orden.estado) +
+      '<h2 class="detail-title">' +
+        'Planilla de Corte #' + orden.id + ' ' + estadoBadge(orden.estado) +
       '</h2>' +
       '<span class="text-muted">' + escHtml(orden.descripcion || '') + '</span>' +
     '</div>' +
@@ -192,7 +199,7 @@ function renderDetallesRows(detalles, editable) {
           : '<strong>' + d.cantidad + '</strong>') +
       '</td>' +
       (editable
-        ? '<td><button class="btn btn-sm btn-danger" onclick="eliminarDetalleOrden(' + d.id + ')">✕</button></td>'
+        ? '<td><button class="btn btn-sm btn-danger" onclick="eliminarDetalleOrden(' + d.id + ')" aria-label="Eliminar línea" title="Eliminar línea">✕</button></td>'
         : '') +
     '</tr>'
   ).join('');
@@ -222,11 +229,11 @@ function buildAddBloqueForm(productos) {
     '</div>' +
     '<div id="nlTallesWrap" style="display:none">' +
       '<div style="margin-bottom:6px;font-size:11px;color:var(--text3)">' +
-        'Cada talle se agrega como línea independiente con su propio número de pedido.' +
+        'Los talles que cargues juntos comparten el mismo número de pedido (p.N) dentro de la planilla.' +
       '</div>' +
       '<div id="nlTallesGrid" style="margin-bottom:12px"></div>' +
       '<div style="display:flex;gap:8px">' +
-        '<button class="btn btn-primary" onclick="agregarBloqueOrden()">+ Agregar a la orden</button>' +
+        '<button class="btn btn-primary" onclick="agregarBloqueOrden()">+ Agregar a la planilla</button>' +
         '<button class="btn btn-ghost"   onclick="limpiarFormOrden()">Limpiar</button>' +
       '</div>' +
     '</div>'
@@ -332,20 +339,24 @@ async function eliminarDetalleOrden(detalleId) {
 
 async function confirmarOrdenActual() {
   if (!_ordenActual) return;
-  if (!confirmAction('¿Confirmar orden?\nSe descontará stock automáticamente.\nSi no alcanza quedará en negativo.')) return;
+  if (!confirmAction('¿Confirmar planilla?\nSe descontará stock automáticamente.\nSi no alcanza quedará en negativo.')) return;
   try {
     await API.ordenes.confirmar(_ordenActual.id);
-    toast('Orden confirmada — stock descontado', 'success');
+    toast('Planilla confirmada — stock descontado', 'success');
     renderOrdenDetalle(_ordenActual.id);
   } catch (e) { toast(e.message, 'error'); }
 }
 
 async function cancelarOrdenActual() {
   if (!_ordenActual) return;
-  if (!confirmAction('¿Cancelar esta orden?')) return;
+  const confirmada = _ordenActual.estado === 'confirmada';
+  const msg = confirmada
+    ? '¿Cancelar esta planilla confirmada?\n\nSe devolverá al stock todo lo que consumió.\nLa devolución quedará registrada en Movimientos.'
+    : '¿Cancelar esta planilla?';
+  if (!confirmAction(msg)) return;
   try {
-    await API.ordenes.cancelar(_ordenActual.id);
-    toast('Orden cancelada', 'success');
+    const r = await API.ordenes.cancelar(_ordenActual.id);
+    toast(r.revertido ? 'Planilla cancelada — stock devuelto' : 'Planilla cancelada', 'success');
     renderOrdenes();
   } catch (e) { toast(e.message, 'error'); }
 }
@@ -354,10 +365,10 @@ async function cancelarOrdenActual() {
 async function confirmarOrden(id) {
   const target = id || (_ordenActual && _ordenActual.id);
   if (!target) return;
-  if (!confirmAction('¿Confirmar orden?')) return;
+  if (!confirmAction('¿Confirmar planilla?')) return;
   try {
     await API.ordenes.confirmar(target);
-    toast('Orden confirmada', 'success');
+    toast('Planilla confirmada', 'success');
     renderOrdenDetalle(target);
   } catch (e) { toast(e.message, 'error'); }
 }
@@ -365,10 +376,10 @@ async function confirmarOrden(id) {
 async function cancelarOrden(id) {
   const target = id || (_ordenActual && _ordenActual.id);
   if (!target) return;
-  if (!confirmAction('¿Cancelar esta orden?')) return;
+  if (!confirmAction('¿Cancelar esta planilla?')) return;
   try {
     await API.ordenes.cancelar(target);
-    toast('Orden cancelada', 'success');
+    toast('Planilla cancelada', 'success');
     renderOrdenes();
   } catch (e) { toast(e.message, 'error'); }
 }
@@ -401,7 +412,7 @@ async function verificarOrden() {
       '" style="margin-bottom:16px;font-size:12px">' +
       (hayFaltante
         ? '⚠ Hay faltantes — podés confirmar igual, el stock quedará en negativo'
-        : '✓ Stock suficiente para toda la orden') +
+        : '✓ Stock suficiente para toda la planilla') +
       '</div>';
 
     bloques.forEach((bloque, idx) => {
@@ -481,10 +492,10 @@ function toggleAcc(id) {
 // ——— CREAR ORDEN ———
 
 function modalCrearOrden() {
-  Modal.open('Nueva Orden de Producción',
+  Modal.open('Nueva planilla de corte',
     '<div class="form-group">' +
-      '<label class="form-label">Descripción (opcional)</label>' +
-      '<input class="form-input" id="orDescripcion" placeholder="Ej: Producción semana 20" />' +
+      '<label class="form-label" for="orDescripcion">Descripción (opcional)</label>' +
+      '<input class="form-input" id="orDescripcion" placeholder="Ej: Corte semana 20" />' +
     '</div>' +
     '<div class="modal-footer">' +
       '<button class="btn" onclick="Modal.close()">Cancelar</button>' +
@@ -497,7 +508,7 @@ async function crearOrden() {
   const desc = document.getElementById('orDescripcion').value.trim() || null;
   try {
     const { id } = await API.ordenes.create({ descripcion: desc });
-    toast('Orden creada', 'success');
+    toast('Planilla creada', 'success');
     Modal.close();
     renderOrdenDetalle(id);
   } catch (e) { toast(e.message, 'error'); }

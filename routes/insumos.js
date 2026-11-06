@@ -3,7 +3,41 @@
 const express = require('express');
 const router = express.Router();
 const { all, get, run, transaction } = require('../db/database');
-const { getStockRows, setStock, adjustStock } = require('../services/stockService');
+const { AppError } = require('../utils/errores');
+const {
+  setStock, adjustStock, usaTalle, registrarMovimientoManual, normalizarTalle, detalleInsumo,
+} = require('../services/stockService');
+const responsables = require('../services/responsablesService');
+
+const TIPOS = ['plantilla', 'fondo', 'cierre', 'hebilla'];
+
+/**
+ * Detalle del insumo + responsable asignado (null si no tiene o si la base
+ * todavía no tiene la migración de responsables).
+ */
+function completarInsumo(row, asignaciones = responsables.mapaAsignaciones()) {
+  detalleInsumo(row);
+  const a = asignaciones.get(row.id);
+  row.responsable = a ? { id: a.responsable_id, slug: a.slug, nombre: a.nombre, asignado_at: a.asignado_at } : null;
+  return row;
+}
+
+/** Valida y normaliza los datos generales (no incluye existencias). */
+function datosGenerales(body) {
+  const nombre = typeof body.nombre === 'string' ? body.nombre.trim() : '';
+  if (!nombre) throw new AppError('El nombre es requerido');
+  if (!TIPOS.includes(body.tipo)) throw new AppError('Tipo de insumo inválido');
+  const stock_minimo = body.stock_minimo === undefined || body.stock_minimo === null || body.stock_minimo === ''
+    ? 0 : Number(body.stock_minimo);
+  if (!Number.isInteger(stock_minimo) || stock_minimo < 0) throw new AppError('El stock mínimo debe ser un entero mayor o igual a 0');
+  const proveedor_id = body.proveedor_id ? Number(body.proveedor_id) : null;
+  if (proveedor_id && !get('SELECT id FROM proveedores WHERE id=?', [proveedor_id])) throw new AppError('Proveedor inexistente');
+  const talles = usaTalle(body.tipo) && Array.isArray(body.talles)
+    ? [...new Set(body.talles.map(normalizarTalle).filter(Boolean))]
+    : [];
+  const color = typeof body.color === 'string' && body.color.trim() ? body.color.trim() : null;
+  return { nombre, tipo: body.tipo, color, stock_minimo, proveedor_id, talles };
+}
 
 router.get('/', (req, res) => {
   const rows = all(`
@@ -12,17 +46,8 @@ router.get('/', (req, res) => {
     LEFT JOIN proveedores p ON p.id = i.proveedor_id
     ORDER BY i.tipo, i.nombre
   `);
-  // Attach aggregated stock
-  for (const row of rows) {
-    row.talles = all(
-      'SELECT talle FROM insumo_talles WHERE insumo_id=? ORDER BY talle',
-      [row.id]
-    ).map(t => t.talle);
-    const stocks = getStockRows(row.id);
-    row.stock_rows = stocks;
-    row.stock_total = stocks.reduce((s, r) => s + r.stock, 0);
-  }
-  res.json(rows);
+  const asignaciones = responsables.mapaAsignaciones();
+  res.json(rows.map(r => completarInsumo(r, asignaciones)));
 });
 
 router.get('/:id', (req, res) => {
@@ -32,109 +57,89 @@ router.get('/:id', (req, res) => {
     LEFT JOIN proveedores p ON p.id = i.proveedor_id
     WHERE i.id=?
   `, [req.params.id]);
-  row.talles = all(
-    'SELECT talle FROM insumo_talles WHERE insumo_id=? ORDER BY talle',
-    [row.id]
-  ).map(t => t.talle);
-  if (!row) return res.status(404).json({ error: 'No encontrado' });
-  row.stock_rows = getStockRows(row.id);
-  row.stock_total = row.stock_rows.reduce((s, r) => s + r.stock, 0);
-  res.json(row);
+  if (!row) return res.status(404).json({ error: 'Insumo no encontrado' });
+  res.json(completarInsumo(row));
 });
 
+/**
+ * Alta de insumo. El stock inicial (opcional) se registra como movimiento
+ * 'ajuste' con referencia 'alta_insumo', para que quede trazado.
+ */
 router.post('/', (req, res) => {
-  const { nombre, tipo, color, stock_minimo, proveedor_id, talles, stock_rows } = req.body;
-  if (!nombre || !tipo) return res.status(400).json({ error: 'nombre y tipo son requeridos' });
+  const d = datosGenerales(req.body);
+  const filasIniciales = Array.isArray(req.body.stock_rows) ? req.body.stock_rows : [];
 
   let newId;
   transaction(() => {
-    const r = run(
+    newId = Number(run(
       'INSERT INTO insumos (nombre, tipo, color, stock_minimo, proveedor_id) VALUES (?,?,?,?,?)',
-      [nombre, tipo, color || null, stock_minimo || 0, proveedor_id || null]
-    );
-    newId = r.lastInsertRowid;
+      [d.nombre, d.tipo, d.color, d.stock_minimo, d.proveedor_id]
+    ).lastInsertRowid);
+    for (const t of d.talles) run('INSERT INTO insumo_talles (insumo_id, talle) VALUES (?, ?)', [newId, t]);
 
-    if (talles && Array.isArray(talles)) {
-      for (const talle of talles) {
-        run(
-          'INSERT INTO insumo_talles (insumo_id, talle) VALUES (?, ?)',
-          [newId, talle]
-        );
-      }
-    }
-
-    if (stock_rows && Array.isArray(stock_rows)) {
-      for (const sr of stock_rows) {
-        setStock(newId, sr.talle || null, sr.stock || 0);
-      }
-    } else {
-      // Default: single general stock row for cierres/hebillas
-      if (tipo === 'cierre' || tipo === 'hebilla') {
-        setStock(newId, null, 0);
-      }
+    const filas = usaTalle(d.tipo)
+      ? filasIniciales.filter(f => normalizarTalle(f.talle) !== null)
+      : [{ talle: null, stock: (filasIniciales.find(f => normalizarTalle(f.talle) === null) || {}).stock || 0 }];
+    for (const f of filas) {
+      const valor = Number(f.stock || 0);
+      if (!Number.isInteger(valor) || valor < 0) throw new AppError('El stock inicial debe ser un entero mayor o igual a 0');
+      setStock(newId, f.talle, 0);
+      if (valor !== 0) adjustStock(newId, f.talle, valor, 'ajuste', 'alta_insumo', newId);
     }
   });
 
   res.json({ id: newId });
 });
 
+/**
+ * Edición de datos generales. NUNCA modifica existencias: si llegan
+ * stock_rows se ignoran (las existencias se cambian con movimientos).
+ */
 router.put('/:id', (req, res) => {
-  const { nombre, tipo, color, stock_minimo, proveedor_id, talles, stock_rows } = req.body;
+  const actual = get('SELECT * FROM insumos WHERE id=?', [req.params.id]);
+  if (!actual) throw new AppError('Insumo no encontrado', 404);
+  const d = datosGenerales(req.body);
+
+  if (usaTalle(actual.tipo) !== usaTalle(d.tipo)) {
+    const conStock = get('SELECT COUNT(*) AS n FROM insumo_stock WHERE insumo_id=? AND stock<>0', [actual.id]).n;
+    const conMovs = get('SELECT COUNT(*) AS n FROM movimientos_stock WHERE insumo_id=?', [actual.id]).n;
+    if (conStock || conMovs) {
+      throw new AppError('No se puede cambiar entre un tipo con talles y uno sin talles porque el insumo ya tiene stock o movimientos', 409);
+    }
+  }
 
   transaction(() => {
-    // actualiza datos del insumo
-    run(
-      'UPDATE insumos SET nombre=?, tipo=?, color=?, stock_minimo=?, proveedor_id=? WHERE id=?',
-      [nombre, tipo, color || null, stock_minimo || 0, proveedor_id || null, req.params.id]
-    );
-
-    // borrar talles anteriores
-    run(
-      'DELETE FROM insumo_talles WHERE insumo_id=?',
-      [req.params.id]
-    );
-
-    // guardar talles nuevos
-    if (talles && Array.isArray(talles)) {
-      for (const talle of talles) {
-        run(
-          'INSERT INTO insumo_talles (insumo_id, talle) VALUES (?, ?)',
-          [req.params.id, talle]
-        );
-      }
-    }
-
-    // actualizar stock
-    if (stock_rows && Array.isArray(stock_rows)) {
-      for (const sr of stock_rows) {
-        setStock(Number(req.params.id), sr.talle || null, sr.stock || 0);
-      }
-    }
+    run('UPDATE insumos SET nombre=?, tipo=?, color=?, stock_minimo=?, proveedor_id=? WHERE id=?',
+      [d.nombre, d.tipo, d.color, d.stock_minimo, d.proveedor_id, actual.id]);
+    run('DELETE FROM insumo_talles WHERE insumo_id=?', [actual.id]);
+    for (const t of d.talles) run('INSERT INTO insumo_talles (insumo_id, talle) VALUES (?, ?)', [actual.id, t]);
   });
 
-  res.json({ ok: true });
+  res.json({ ok: true, stock_ignorado: Array.isArray(req.body.stock_rows) });
 });
 
 router.delete('/:id', (req, res) => {
-  run('DELETE FROM insumos WHERE id=?', [req.params.id]);
+  const r = run('DELETE FROM insumos WHERE id=?', [req.params.id]);
+  if (!r.changes) throw new AppError('Insumo no encontrado', 404);
   res.json({ ok: true });
 });
 
-// Adjust stock manually (ingreso / egreso)
+// Asignar, cambiar o quitar (responsable_id: null) el responsable de reposición.
+// No modifica stock, movimientos ni historiales.
+router.put('/:id/responsable', (req, res) => {
+  res.json({ ok: true, ...responsables.asignar(Number(req.params.id), req.body.responsable_id) });
+});
+
+// Movimiento manual de stock (ingreso / egreso / ajuste)
 router.post('/:id/stock/ajuste', (req, res) => {
   const { talle, cantidad, tipo } = req.body;
-  // tipo: 'ingreso' | 'egreso' | 'ajuste'
-  if (!cantidad || !tipo) return res.status(400).json({ error: 'cantidad y tipo son requeridos' });
-  const delta = tipo === 'egreso' ? -Math.abs(cantidad) : Math.abs(cantidad);
-  adjustStock(Number(req.params.id), talle || null, delta, tipo);
-  res.json({ ok: true });
+  res.json({ ok: true, ...registrarMovimientoManual({ insumo_id: Number(req.params.id), talle, cantidad, tipo }) });
 });
 
-// Set absolute stock for a talle
+// Fijar el stock de un talle: se registra como ajuste (queda en Movimientos)
 router.put('/:id/stock', (req, res) => {
   const { talle, stock } = req.body;
-  setStock(Number(req.params.id), talle || null, stock);
-  res.json({ ok: true });
+  res.json({ ok: true, ...registrarMovimientoManual({ insumo_id: Number(req.params.id), talle, cantidad: stock, tipo: 'ajuste' }) });
 });
 
 module.exports = router;

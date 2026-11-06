@@ -51,6 +51,19 @@ function formatDateTime(d) {
   return new Date(d).toLocaleString('es-AR', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit' });
 }
 
+// Etiquetas visibles de los estados (los valores internos no cambian)
+const ESTADO_LABELS = {
+  borrador:   'Borrador',
+  confirmada: 'Confirmada',
+  cancelada:  'Cancelada',
+  enviado:    'Enviado',
+  recibido:   'Recibido',
+  cancelado:  'Cancelado',
+  faltante:   'Faltante',
+  stock_bajo: 'Stock bajo',
+  sin_stock:  'Sin stock',
+};
+
 function estadoBadge(estado) {
   const map = {
     borrador:   'badge-gray',
@@ -58,11 +71,73 @@ function estadoBadge(estado) {
     cancelada:  'badge-red',
     enviado:    'badge-blue',
     recibido:   'badge-green',
+    cancelado:  'badge-red',
     faltante:   'badge-red',
     stock_bajo: 'badge-gold',
   };
-  return `<span class="badge ${map[estado] || 'badge-gray'}">${estado}</span>`;
+  const label = ESTADO_LABELS[estado] || estado;
+  return `<span class="badge ${map[estado] || 'badge-gray'}">${escHtml(label)}</span>`;
 }
+
+// Estado de stock con color, forma y texto. Misma regla que el servidor:
+// negativo → Faltante · cero → Sin stock · 0 < stock ≤ mínimo (mínimo > 0) → Stock bajo · resto → OK
+const STOCK_ESTADOS = {
+  faltante:   { clase: 'falta', label: 'Faltante' },
+  sin_stock:  { clase: 'sin',   label: 'Sin stock' },
+  stock_bajo: { clase: 'bajo',  label: 'Stock bajo' },
+  ok:         { clase: 'ok',    label: 'OK' },
+};
+
+function clasificarStock(stock, minimo) {
+  if (stock < 0) return 'faltante';
+  if (stock === 0) return 'sin_stock';
+  if (minimo > 0 && stock <= minimo) return 'stock_bajo';
+  return 'ok';
+}
+
+function stockBadge(stock, minimo) {
+  return estadoStockBadge(clasificarStock(stock, minimo));
+}
+
+// Estado ya calculado por el servidor ('faltante' | 'sin_stock' | 'stock_bajo' | 'ok')
+function estadoStockBadge(estado) {
+  const e = STOCK_ESTADOS[estado] || STOCK_ESTADOS.ok;
+  return `<span class="stock-state stock-state--${e.clase}">${e.label}</span>`;
+}
+
+// Responsable de reposición (o "Sin asignar")
+function responsableChip(r) {
+  if (!r || !r.slug) return '<span class="text-muted">Sin asignar</span>';
+  const e = getEspacio(r.slug) || {};
+  return `<span class="resp-chip"><span class="nav-avatar" style="--avatar:${e.color || 'var(--text3)'}" aria-hidden="true">${escHtml(e.inicial || r.nombre[0])}</span>${escHtml(r.nombre)}</span>`;
+}
+
+function avisoMigracionPendiente(detalle = '') {
+  return `<div class="notice notice--warn" role="status">
+    <span class="notice-icon" aria-hidden="true">▲</span>
+    <div>
+      <strong>La gestión de responsables todavía no está habilitada en esta base de datos.</strong>
+      <p>Falta aplicar la migración de responsables (requiere aprobación y respaldo previo). ${detalle}
+      El resto del sistema funciona normalmente.</p>
+    </div>
+  </div>`;
+}
+
+// Etiquetas visibles de los movimientos y sus referencias
+const MOVIMIENTO_LABELS = {
+  ingreso:        'Ingreso',
+  egreso:         'Egreso',
+  ajuste:         'Ajuste',
+  consumo_orden:  'Consumo de planilla',
+  ingreso_pedido: 'Ingreso de pedido',
+};
+const REFERENCIA_LABELS = {
+  orden: 'Planilla',
+  pedido: 'Pedido',
+  anulacion_orden: 'Anulación de planilla',
+  alta_insumo: 'Alta de insumo',
+  conciliacion: 'Conciliación',
+};
 
 function tipoBadge(tipo) {
   const map = {
@@ -75,9 +150,7 @@ function tipoBadge(tipo) {
 }
 
 function stockColor(stock, minimo) {
-  if (stock < 0) return 'text-red';
-  if (stock <= minimo) return 'text-gold';
-  return 'text-green';
+  return { faltante: 'text-red', sin_stock: 'text-orange', stock_bajo: 'text-gold', ok: 'text-green' }[clasificarStock(stock, minimo)];
 }
 
 function emptyState(msg = 'Sin datos') {
@@ -88,21 +161,30 @@ function emptyState(msg = 'Sin datos') {
 }
 
 function escHtml(str) {
-  if (!str) return '';
-  return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
-// ===== TOPBAR ACTIONS =====
+// ===== TOPBAR =====
 function setTopbarActions(html) {
   document.getElementById('topbarActions').innerHTML = html;
 }
 function setPageTitle(t) {
   document.getElementById('pageTitle').textContent = t;
+  document.title = t + ' — Darc Cuir & Yatay';
+}
+function setBreadcrumb(t) {
+  document.getElementById('breadcrumb').textContent = t || '';
 }
 
-// ===== MENU TOGGLE =====
+// ===== MENU TOGGLE (celular / tablet) =====
 document.getElementById('menuToggle').addEventListener('click', () => {
-  document.getElementById('sidebar').classList.toggle('open');
+  const sb = document.getElementById('sidebar');
+  const open = !sb.classList.contains('open');
+  sb.classList.toggle('open', open);
+  document.getElementById('menuToggle').setAttribute('aria-expanded', String(open));
 });
 
 // ===== TALLE CONSTANTS =====
